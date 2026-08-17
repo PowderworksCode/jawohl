@@ -586,6 +586,29 @@ Yes for almost all of them, and the answer is usually *JSON Schema itself*.
 | HTML | RELAX NG plus custom rules (how validator.nu works); not consumer-facing | no |
 | SSE / JSONL | n/a — framing; the payload's own schema applies | inherited |
 
+**But none of them is remotely as common as JSON Schema, and the table should
+not be read as implying parity.** Adoption is wildly lopsided:
+
+- **JSON Schema is in a class of its own, and language models are widening the
+  gap.** OpenAPI 3.1 adopted JSON Schema 2020-12 outright, ~85% of public APIs
+  ship JSON, and — the decisive part — Anthropic, OpenAI and Google now all
+  enforce JSON Schema *at the sampling level* with grammar-constrained decoding.
+  It is no longer a thing you check output against; it is the interface to the
+  model.
+- **XSD is the only one with a comparable install base, and it is a regulated
+  one.** SWIFT, HL7, SAML and government filing move enormous volume through it,
+  but it survives where a standard mandates it rather than where anyone picks it.
+  Nobody starting today chooses XSD, and no model emits one.
+- **Everything else is niche.** RELAX NG lives inside document toolchains and
+  validator internals; Schematron sits beside XSD in a few industries; Table
+  Schema and CSVW belong to the open-data community. None is a mass standard.
+
+The practical reading for this plan: **the constraint work already done is the
+constraint work that matters.** YAML, TOML and CSV borrow JSON Schema precisely
+*because* it won, so C3 and C4 are not one option among several — they are the
+schema layer, and every format below inherits them or has no mass-market schema
+story at all.
+
 Two consequences, and the second corrects this document.
 
 **Most of these formats validate with JSON Schema, so C3 and C4 transfer nearly
@@ -612,10 +635,31 @@ dead-state question** jawohl already answers for `pattern` (§C3) — and unlike
 construction. Prefix validation over XML is on *better* theoretical footing than
 over JSON, where numeric bounds forced the `NumberProfile` compromise.
 
-The catch is demand, not capability: XSD is heavy, and nobody makes a language
-model emit one. Its value would be validating model output against a schema the
-*consumer* already has — which is a real situation in enterprise integration, and
-not the LLM-native one.
+The catch is demand, and it is a bigger catch than "not capability" suggests:
+XSD is heavy, no model emits one, and its living deployments are the regulated
+ones above. Its value here would be validating model output against a schema the
+*consumer* already owns — real in enterprise integration, absent from the
+LLM-native path. Technically the best fit in the list; practically the one
+fewest people would use.
+
+### Why the validation half is worth more than it looks
+
+One finding from the survey sharpens the case for C3 and C4 beyond jawohl's own
+formats.
+
+Now that providers constrain decoding with JSON Schema, the reliability question
+has moved from *"will the model emit valid JSON?"* to **"which slice of JSON
+Schema does this provider actually honour?"** — and the slices differ enough to
+matter. Anthropic drops numeric bounds, OpenAI bans unions and imposes ceilings,
+Gemini's limits are undocumented. The same schema can be enforced on one
+provider and **silently weakened** on another, with no error and no signal.
+
+That is exactly the failure mode jawohl exists to refuse. A constraint the
+provider quietly ignored is a constraint nobody checked — unless the consumer
+checks it themselves, incrementally, as the output arrives. jawohl's validation
+is therefore not a duplicate of provider-side constraint decoding; it is the
+**backstop for the parts the provider dropped**, and the lowering report is the
+one place a caller is told which constraints are actually live.
 
 ### Format by format
 
