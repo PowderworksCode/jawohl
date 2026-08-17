@@ -5,7 +5,7 @@
 //! JSON Schema's `pattern` is an **unanchored** search: the value is valid if
 //! the regex matches *anywhere* in it. That has a consequence which is easy to
 //! get wrong — for an unanchored pattern, **no prefix is ever irrecoverable**.
-//! Whatever text has arrived, more text can always be appended that contains a
+//! Whatever text has arrived, more can always be appended that contains a
 //! match, so a partial value can never be ruled out.
 //!
 //! Early rejection is therefore sound only when the pattern is anchored at the
@@ -17,7 +17,6 @@
 //! value completes; they simply contribute no early verdict, and the lowering
 //! report says so rather than leaving the caller to assume otherwise.
 
-#[cfg(feature = "pattern")]
 use regex_automata::{
     dfa::{dense, Automaton},
     Anchored, Input,
@@ -27,33 +26,22 @@ use regex_automata::{
 #[derive(Debug, Clone)]
 pub struct Pattern {
     source: String,
-    #[cfg(feature = "pattern")]
-    dfa: Option<dense::DFA<Vec<u32>>>,
+    dfa: dense::DFA<Vec<u32>>,
     /// Whether a partial value can be rejected before it finishes — true only
     /// for `^`-anchored patterns (see the module docs).
     supports_early_rejection: bool,
 }
 
 impl Pattern {
-    /// Compile a pattern. Returns `None` if the regex does not compile, or if
-    /// the `pattern` feature is off — in both cases the caller records it in
-    /// the lowering report rather than silently treating the value as valid.
+    /// Compile a pattern. `None` when the regex does not compile, which the
+    /// caller records in the lowering report rather than silently treating the
+    /// value as valid.
     pub(crate) fn compile(source: &str) -> Option<Pattern> {
-        #[cfg(feature = "pattern")]
-        {
-            let anchored = source.starts_with('^');
-            let dfa = dense::DFA::new(source).ok()?;
-            Some(Pattern {
-                source: source.to_string(),
-                dfa: Some(dfa),
-                supports_early_rejection: anchored,
-            })
-        }
-        #[cfg(not(feature = "pattern"))]
-        {
-            let _ = source;
-            None
-        }
+        Some(Pattern {
+            source: source.to_string(),
+            dfa: dense::DFA::new(source).ok()?,
+            supports_early_rejection: source.starts_with('^'),
+        })
     }
 
     pub fn source(&self) -> &str {
@@ -69,52 +57,37 @@ impl Pattern {
     /// Could a string beginning `prefix` still satisfy this pattern?
     ///
     /// Conservative by construction: when no sound answer is available — an
-    /// unanchored pattern, or a build without the `pattern` feature — this
-    /// returns `true`, so a value is never rejected on a guess.
+    /// unanchored pattern — this returns `true`, so a value is never rejected
+    /// on a guess.
     pub fn prefix_is_live(&self, prefix: &str) -> bool {
         if !self.supports_early_rejection {
             return true;
         }
-        #[cfg(feature = "pattern")]
-        {
-            let Some(dfa) = &self.dfa else { return true };
-            let input = Input::new(prefix).anchored(Anchored::Yes);
-            let Ok(mut state) = dfa.start_state_forward(&input) else {
-                return true;
-            };
-            for &b in prefix.as_bytes() {
-                state = dfa.next_state(state, b);
-                if dfa.is_dead_state(state) {
-                    return false;
-                }
+        let input = Input::new(prefix).anchored(Anchored::Yes);
+        let Ok(mut state) = self.dfa.start_state_forward(&input) else {
+            return true;
+        };
+        for &b in prefix.as_bytes() {
+            state = self.dfa.next_state(state, b);
+            if self.dfa.is_dead_state(state) {
+                return false;
             }
-            true
         }
-        #[cfg(not(feature = "pattern"))]
-        {
-            let _ = prefix;
-            true
-        }
+        true
     }
 
     /// Does the completed value satisfy the pattern? Unanchored, per JSON
     /// Schema: a match anywhere in the string counts.
     pub fn matches(&self, value: &str) -> bool {
-        #[cfg(feature = "pattern")]
-        {
-            let Some(dfa) = &self.dfa else { return true };
-            let input = Input::new(value);
-            dfa.try_search_fwd(&input).ok().flatten().is_some()
-        }
-        #[cfg(not(feature = "pattern"))]
-        {
-            let _ = value;
-            true
-        }
+        self.dfa
+            .try_search_fwd(&Input::new(value))
+            .ok()
+            .flatten()
+            .is_some()
     }
 }
 
-#[cfg(all(test, feature = "pattern"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -122,17 +95,12 @@ mod tests {
     fn anchored_patterns_reject_early() {
         let p = Pattern::compile("^[0-9]{3}-[0-9]{4}$").unwrap();
         assert!(p.supports_early_rejection());
-        assert!(p.prefix_is_live(""));
-        assert!(p.prefix_is_live("5"));
-        assert!(p.prefix_is_live("555"));
-        assert!(p.prefix_is_live("555-"));
-        assert!(p.prefix_is_live("555-12"));
-        // a letter can never appear
-        assert!(!p.prefix_is_live("5a"));
-        assert!(!p.prefix_is_live("abc"));
-        // too long
-        assert!(!p.prefix_is_live("555-12345"));
-
+        for live in ["", "5", "555", "555-", "555-12"] {
+            assert!(p.prefix_is_live(live), "{live:?} should be live");
+        }
+        for dead in ["5a", "abc", "555-12345"] {
+            assert!(!p.prefix_is_live(dead), "{dead:?} should be dead");
+        }
         assert!(p.matches("555-1234"));
         assert!(!p.matches("555-123"));
     }

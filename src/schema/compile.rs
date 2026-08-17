@@ -200,15 +200,7 @@ impl Compiler {
                                 n.pattern = Some(pat);
                                 self.report.compiled += 1;
                             }
-                            None => self.note(
-                                &loc,
-                                "pattern",
-                                if cfg!(feature = "pattern") {
-                                    "regex did not compile"
-                                } else {
-                                    "the `pattern` feature is disabled; this pattern is not checked"
-                                },
-                            ),
+                            None => self.note(&loc, "pattern", "regex did not compile"),
                         }
                     }
                 }

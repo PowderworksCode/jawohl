@@ -178,7 +178,6 @@ fn a_mixed_enum_remembers_it_has_non_strings() {
 
 // ---- pattern, where soundness needs an anchor ------------------------------
 
-#[cfg(feature = "pattern")]
 #[test]
 fn an_anchored_pattern_supports_early_rejection() {
     let s = compile(r#"{"pattern":"^[a-z]+$"}"#).unwrap();
@@ -189,7 +188,6 @@ fn an_anchored_pattern_supports_early_rejection() {
     assert!(s.lowering_report().unsupported.is_empty());
 }
 
-#[cfg(feature = "pattern")]
 #[test]
 fn an_unanchored_pattern_says_so_in_the_report() {
     // Sound: any prefix can still be extended into a match, so no early
@@ -207,7 +205,6 @@ fn an_unanchored_pattern_says_so_in_the_report() {
         .any(|u| u.keyword == "pattern" && u.reason.contains("unanchored")));
 }
 
-#[cfg(feature = "pattern")]
 #[test]
 fn a_broken_regex_is_reported() {
     let s = compile(r#"{"pattern":"[unclosed"}"#).unwrap();
@@ -271,21 +268,11 @@ fn a_realistic_pydantic_style_schema_compiles_clean() {
         }"##,
     )
     .unwrap();
-    // With `pattern` on, every keyword here lowers. With it off, the zip
-    // pattern is reported as unchecked rather than silently treated as
-    // satisfied -- which is the whole point of the report.
     let unsupported = &s.lowering_report().unsupported;
-    #[cfg(feature = "pattern")]
     assert!(
         unsupported.is_empty(),
         "should lower cleanly, got {unsupported:?}"
     );
-    #[cfg(not(feature = "pattern"))]
-    {
-        assert_eq!(unsupported.len(), 1, "got {unsupported:?}");
-        assert_eq!(unsupported[0].keyword, "pattern");
-        assert!(unsupported[0].reason.contains("feature is disabled"));
-    }
     let root = s.root_node();
     assert_eq!(root.required, ["name", "role"]);
     let addr = s.node(root.properties["address"]);
