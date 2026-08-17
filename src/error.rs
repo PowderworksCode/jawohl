@@ -42,6 +42,8 @@ pub enum ParseErrorKind {
     MalformedNumber,
     /// `tru}` — a literal that started but did not finish.
     BadLiteral,
+    /// Containers nested deeper than the configured limit.
+    DepthLimitExceeded { limit: usize },
 }
 
 impl fmt::Display for ParseError {
@@ -70,6 +72,9 @@ impl fmt::Display for ParseError {
             }
             MalformedNumber => write!(f, "malformed number"),
             BadLiteral => write!(f, "malformed literal (expected true, false or null)"),
+            DepthLimitExceeded { limit } => {
+                write!(f, "nesting deeper than the limit of {limit}")
+            }
         }
     }
 }

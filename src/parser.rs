@@ -16,6 +16,7 @@
 //!   `true`, `false` or `null` as a prefix.
 
 use crate::error::{ParseError, ParseErrorKind};
+use crate::event::{escape_token, Event, ValueKind};
 use crate::value::{Number, Value};
 
 /// What the machine is waiting for at a container boundary.
@@ -41,10 +42,31 @@ enum Frame {
         members: Vec<(String, Value)>,
         /// A key that has been read but whose value has not arrived.
         pending_key: Option<String>,
+        /// Length of `path_prefix` before this frame was pushed, so closing it
+        /// restores the prefix in O(1).
+        path_len: usize,
     },
     Array {
         items: Vec<Value>,
+        path_len: usize,
     },
+}
+
+impl Frame {
+    /// This frame's current slot: the key whose value is being filled, or the
+    /// index of the next array element.
+    fn slot_token(&self) -> String {
+        match self {
+            Frame::Object { pending_key, .. } => escape_token(pending_key.as_deref().unwrap_or("")),
+            Frame::Array { items, .. } => items.len().to_string(),
+        }
+    }
+
+    fn path_len(&self) -> usize {
+        match self {
+            Frame::Object { path_len, .. } | Frame::Array { path_len, .. } => *path_len,
+        }
+    }
 }
 
 /// Where inside a string literal we are.
@@ -106,6 +128,11 @@ enum Tok {
     },
 }
 
+/// Maximum container nesting. Chosen well above anything a real document
+/// reaches (serde_json defaults to 128) while still bounding the work an
+/// adversarial input can force.
+pub const DEFAULT_MAX_DEPTH: usize = 1024;
+
 pub(crate) struct Parser {
     stack: Vec<Frame>,
     expect: Expect,
@@ -113,6 +140,20 @@ pub(crate) struct Parser {
     root: Option<Value>,
     failed: Option<ParseError>,
     offset: usize,
+    /// Events emitted since the consumer last drained.
+    events: Vec<Event>,
+    /// The frozen part of the current path: every open frame's slot token
+    /// except the innermost. Maintained incrementally — recomputing it per
+    /// event made deep documents quadratic.
+    path_prefix: String,
+    /// Refuse to nest deeper than this. Real documents are a handful of levels
+    /// deep; unbounded nesting is a denial-of-service vector when the input is
+    /// untrusted model output, and any design that allocates per level needs a
+    /// ceiling somewhere.
+    max_depth: usize,
+    /// How much of the in-flight string's stable prefix has already been
+    /// reported, so progress is emitted once per push rather than per byte.
+    reported_prefix: usize,
     /// The largest prefix length at which the input was *structurally
     /// closable* — everything before it is a complete value, so appending the
     /// open containers' closing brackets yields a valid document. Anything
@@ -129,8 +170,54 @@ impl Parser {
             root: None,
             failed: None,
             offset: 0,
+            events: Vec::new(),
+            path_prefix: String::new(),
+            max_depth: DEFAULT_MAX_DEPTH,
+            reported_prefix: 0,
             commit: 0,
         }
+    }
+
+    /// Take everything emitted since the last drain.
+    pub(crate) fn drain_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// The JSON Pointer of the slot currently being filled — the value under
+    /// construction inside the innermost open container, or `""` at the root.
+    ///
+    /// A parent's `pending_key` stays set for as long as its child is being
+    /// built (it is cleared only when the child attaches), so walking the
+    /// frames spells out the full path.
+    fn slot_pointer(&self) -> String {
+        let mut out = String::with_capacity(self.path_prefix.len() + 8);
+        out.push_str(&self.path_prefix);
+        if let Some(top) = self.stack.last() {
+            out.push('/');
+            out.push_str(&top.slot_token());
+        }
+        out
+    }
+
+    /// Enter a container, freezing the enclosing frame's slot into the path.
+    fn push_frame(&mut self, make: impl FnOnce(usize) -> Frame) -> Result<(), ParseError> {
+        if self.stack.len() >= self.max_depth {
+            return self.err(ParseErrorKind::DepthLimitExceeded {
+                limit: self.max_depth,
+            });
+        }
+        let saved = self.path_prefix.len();
+        if let Some(top) = self.stack.last() {
+            let tok = top.slot_token();
+            self.path_prefix.push('/');
+            self.path_prefix.push_str(&tok);
+        }
+        self.stack.push(make(saved));
+        Ok(())
+    }
+
+    pub(crate) fn set_max_depth(&mut self, depth: usize) {
+        self.max_depth = depth;
     }
 
     pub(crate) fn failure(&self) -> Option<&ParseError> {
@@ -164,6 +251,7 @@ impl Parser {
                 self.commit = self.offset;
             }
         }
+        self.emit_progress();
         Ok(())
     }
 
@@ -189,6 +277,30 @@ impl Parser {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Report an open string's growth, at most once per push. Emitted only
+    /// when the *stable* prefix actually grew — bytes swallowed by an
+    /// unresolved escape produce no event.
+    fn emit_progress(&mut self) {
+        let (path, prefix) = match &self.tok {
+            Tok::Str {
+                decoded,
+                is_key: false,
+                ..
+            } => (self.slot_pointer(), stable_prefix(decoded)),
+            _ => {
+                self.reported_prefix = 0;
+                return;
+            }
+        };
+        if prefix.len() > self.reported_prefix {
+            self.reported_prefix = prefix.len();
+            self.events.push(Event::ValueProgressed {
+                path,
+                stable_prefix: prefix,
+            });
+        }
     }
 
     fn step(&mut self, b: u8) -> Result<(), ParseError> {
@@ -273,23 +385,35 @@ impl Parser {
     }
 
     fn begin_value(&mut self, b: u8) -> Result<(), ParseError> {
+        // `]` reaches here when closing an empty array; that is a container
+        // ending, not a value beginning.
+        if let Some(kind) = value_kind(b) {
+            let path = self.slot_pointer();
+            self.reported_prefix = 0;
+            self.events.push(Event::ValueStarted { path, kind });
+        }
         match b {
             b'{' => {
-                self.stack.push(Frame::Object {
+                self.push_frame(|path_len| Frame::Object {
                     members: Vec::new(),
                     pending_key: None,
-                });
+                    path_len,
+                })?;
                 self.expect = Expect::KeyOrEnd;
                 Ok(())
             }
             b'[' => {
-                self.stack.push(Frame::Array { items: Vec::new() });
+                self.push_frame(|path_len| Frame::Array {
+                    items: Vec::new(),
+                    path_len,
+                })?;
                 self.expect = Expect::Value;
                 Ok(())
             }
             b']' => {
                 // An empty array: `[` then `]`, which lands here as Expect::Value.
-                if matches!(self.stack.last(), Some(Frame::Array { items })  if items.is_empty()) {
+                if matches!(self.stack.last(), Some(Frame::Array { items, .. })  if items.is_empty())
+                {
                     self.close_container(b']')
                 } else {
                     self.err(ParseErrorKind::Unexpected {
@@ -570,22 +694,30 @@ impl Parser {
     /// Attach a finished value to its parent (or make it the root) and move to
     /// the state that follows a completed value.
     fn attach(&mut self, v: Value) {
+        // The path must be read before the slot advances. For a container this
+        // runs after its frame is popped, so it names the container itself.
+        self.events.push(Event::ValueCompleted {
+            path: self.slot_pointer(),
+            value: v.clone(),
+        });
         match self.stack.last_mut() {
             Some(Frame::Object {
                 members,
                 pending_key,
+                ..
             }) => {
                 let k = pending_key.take().unwrap_or_default();
                 members.push((k, v));
                 self.expect = Expect::CommaOrEnd;
             }
-            Some(Frame::Array { items }) => {
+            Some(Frame::Array { items, .. }) => {
                 items.push(v);
                 self.expect = Expect::CommaOrEnd;
             }
             None => {
                 self.root = Some(v);
                 self.expect = Expect::Done;
+                self.events.push(Event::DocumentCompleted);
             }
         }
     }
@@ -595,9 +727,10 @@ impl Parser {
             Some(f) => f,
             None => return self.err(ParseErrorKind::UnbalancedClose { found: b }),
         };
+        self.path_prefix.truncate(frame.path_len());
         let (value, open) = match frame {
             Frame::Object { members, .. } => (Value::Object(members), b'{'),
-            Frame::Array { items } => (Value::Array(items), b'['),
+            Frame::Array { items, .. } => (Value::Array(items), b'['),
         };
         let want = if open == b'{' { b'}' } else { b']' };
         if b != want {
@@ -614,7 +747,7 @@ impl Parser {
             Expect::Done | Expect::CommaOrEnd | Expect::KeyOrEnd => true,
             // Just after `[`: an empty array is a complete value.
             Expect::Value => {
-                matches!(self.stack.last(), Some(Frame::Array { items }) if items.is_empty())
+                matches!(self.stack.last(), Some(Frame::Array { items, .. }) if items.is_empty())
             }
             _ => false,
         }
@@ -678,6 +811,7 @@ impl Parser {
                 Frame::Object {
                     members,
                     pending_key,
+                    ..
                 } => {
                     let mut m = members.clone();
                     if let Some(p) = pending.take() {
@@ -685,7 +819,7 @@ impl Parser {
                     }
                     Value::Object(m)
                 }
-                Frame::Array { items } => {
+                Frame::Array { items, .. } => {
                     let mut it = items.clone();
                     if let Some(p) = pending.take() {
                         it.push(p);
@@ -723,7 +857,7 @@ impl Parser {
                 Frame::Object { pending_key, .. } => {
                     path.push(pending_key.clone().unwrap_or_default())
                 }
-                Frame::Array { items } => path.push(items.len().to_string()),
+                Frame::Array { items, .. } => path.push(items.len().to_string()),
             }
         }
         // The last segment addresses the slot *inside* the innermost frame,
@@ -770,4 +904,17 @@ pub(crate) struct Completion {
     pub tail: String,
     /// Closing brackets for every container still open, innermost first.
     pub closers: String,
+}
+
+/// The kind of value a byte begins, or `None` if it does not begin one.
+fn value_kind(b: u8) -> Option<ValueKind> {
+    Some(match b {
+        b'{' => ValueKind::Object,
+        b'[' => ValueKind::Array,
+        b'"' => ValueKind::String,
+        b'-' | b'0'..=b'9' => ValueKind::Number,
+        b't' | b'f' => ValueKind::Bool,
+        b'n' => ValueKind::Null,
+        _ => return None,
+    })
 }

@@ -42,10 +42,13 @@
 //! ```
 
 mod error;
+mod event;
 mod parser;
 mod value;
 
 pub use error::{ParseError, ParseErrorKind};
+pub use event::{Event, ValueKind};
+pub use parser::DEFAULT_MAX_DEPTH;
 pub use value::{Number, Syntax, Value};
 
 use parser::Parser;
@@ -73,6 +76,25 @@ impl Stream {
         Stream {
             parser: Parser::new(),
         }
+    }
+
+    /// Set the maximum container nesting depth. The default is
+    /// [`DEFAULT_MAX_DEPTH`].
+    ///
+    /// Nesting deeper than this is a [`ParseErrorKind::DepthLimitExceeded`].
+    /// The limit exists because jawohl's input is untrusted model output and
+    /// every level costs an allocation: without a ceiling, `[` repeated is a
+    /// denial-of-service vector. Raise it if you genuinely have deep
+    /// documents; lower it to harden further.
+    ///
+    /// ```
+    /// # use jawohl::Stream;
+    /// let mut s = Stream::new().with_max_depth(3);
+    /// assert!(s.push(b"[[[[[1]]]]]").is_err());
+    /// ```
+    pub fn with_max_depth(mut self, depth: usize) -> Self {
+        self.parser.set_max_depth(depth);
+        self
     }
 
     /// Feed the next chunk.
@@ -131,6 +153,25 @@ impl Stream {
     /// The failure that terminated this stream, if any.
     pub fn error(&self) -> Option<&ParseError> {
         self.parser.failure()
+    }
+
+    /// Take every change since the last drain.
+    ///
+    /// The log is append-only and draining empties it, so a consumer that
+    /// calls this after each [`push`](Stream::push) sees each event exactly
+    /// once. See [`Event`] for the ordering guarantees.
+    ///
+    /// ```
+    /// # use jawohl::{Stream, Event, ValueKind};
+    /// let mut s = Stream::new();
+    /// s.push(br#"{"a":1}"#).unwrap();
+    /// let events = s.changes();
+    /// assert!(matches!(events.first(), Some(Event::ValueStarted { kind: ValueKind::Object, .. })));
+    /// assert!(matches!(events.last(), Some(Event::DocumentCompleted)));
+    /// assert!(s.changes().is_empty()); // drained
+    /// ```
+    pub fn changes(&mut self) -> Vec<Event> {
+        self.parser.drain_events()
     }
 
     /// Signal end of input: completes a trailing number or literal if it is

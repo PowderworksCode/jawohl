@@ -235,28 +235,58 @@ fn byte_at_a_time_agrees_with_all_at_once() {
 // ---- the two pathological cases, generated rather than vendored -------------
 
 #[test]
-fn deeply_nested_input_does_not_blow_the_stack() {
-    // Upstream n_structure_100000_opening_arrays.json. Every `[` is a valid
-    // prefix, so this is not an error — but it must not be *complete*, and it
-    // must not overflow.
+fn pathological_nesting_is_refused_by_the_depth_limit() {
+    // Upstream n_structure_100000_opening_arrays.json. Every `[` is a legal
+    // prefix in isolation, so this is not a grammar error — it is refused by
+    // the depth limit, which exists precisely for input like this. Before the
+    // limit was added, emitting a path per level made this quadratic and the
+    // test wedged.
     let deep = "[".repeat(100_000);
-    let (mut s, ok) = feed_by_byte(deep.as_bytes());
-    assert!(ok, "an unclosed array is a legal prefix");
-    let _ = s.finish();
+    let (s, ok) = feed_by_byte(deep.as_bytes());
+    assert!(!ok, "unbounded nesting must be refused");
     assert!(
-        !s.is_document_complete(),
-        "100000 unclosed arrays is not a document"
+        matches!(
+            s.error().map(|e| &e.kind),
+            Some(jawohl::ParseErrorKind::DepthLimitExceeded { .. })
+        ),
+        "expected a depth-limit error, got {:?}",
+        s.error()
+    );
+    assert!(!accepts(deep.as_bytes()));
+}
+
+#[test]
+fn pathological_open_objects_are_refused_too() {
+    // Upstream n_structure_open_array_object.json: `[{"":` repeated.
+    let deep = r#"[{"":"#.repeat(50_000);
+    let (_, ok) = feed_by_byte(deep.as_bytes());
+    assert!(!ok);
+    assert!(!accepts(deep.as_bytes()));
+}
+
+#[test]
+fn nesting_just_under_the_limit_still_works() {
+    let depth = jawohl::DEFAULT_MAX_DEPTH;
+    let doc = format!("{}{}", "[".repeat(depth), "]".repeat(depth));
+    assert!(accepts(doc.as_bytes()), "depth {depth} must be accepted");
+    assert_eq!(complete_json(&doc).unwrap(), doc);
+
+    let too_deep = format!("{}{}", "[".repeat(depth + 1), "]".repeat(depth + 1));
+    assert!(
+        !accepts(too_deep.as_bytes()),
+        "depth {} must not be",
+        depth + 1
     );
 }
 
 #[test]
-fn deeply_nested_open_objects_do_not_blow_the_stack() {
-    // Upstream n_structure_open_array_object.json: `[{"":` repeated.
-    let deep = r#"[{"":"#.repeat(50_000);
-    let (mut s, ok) = feed_by_byte(deep.as_bytes());
-    assert!(ok, "the repetition is a legal prefix");
-    let _ = s.finish();
-    assert!(!s.is_document_complete());
+fn the_depth_limit_is_configurable() {
+    let doc = "[[[[[1]]]]]";
+    let mut shallow = Stream::new().with_max_depth(3);
+    assert!(shallow.push(doc.as_bytes()).is_err());
+
+    let mut deep = Stream::new().with_max_depth(10);
+    assert!(deep.push(doc.as_bytes()).is_ok());
 }
 
 #[test]
