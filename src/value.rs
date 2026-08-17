@@ -36,6 +36,21 @@ impl Number {
     }
 }
 
+impl std::str::FromStr for Number {
+    type Err = crate::ParseError;
+
+    /// Parse a JSON number from its text. Rejects anything JSON would.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match crate::parse_complete(s)? {
+            Value::Number(n) => Ok(n),
+            _ => Err(crate::ParseError {
+                offset: 0,
+                kind: crate::ParseErrorKind::MalformedNumber,
+            }),
+        }
+    }
+}
+
 impl std::fmt::Display for Number {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)

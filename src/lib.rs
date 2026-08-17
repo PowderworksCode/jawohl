@@ -44,6 +44,7 @@
 mod error;
 mod event;
 mod parser;
+pub mod schema;
 mod value;
 
 pub use error::{ParseError, ParseErrorKind};
@@ -205,6 +206,41 @@ fn parse_pointer(p: &str) -> Option<Vec<String>> {
             .map(|t| t.replace("~1", "/").replace("~0", "~"))
             .collect(),
     )
+}
+
+/// Parse a complete JSON document.
+///
+/// A convenience over [`Stream`] for the non-streaming case — and the function
+/// jawohl uses on itself to read a JSON Schema, which is why the default build
+/// still needs no JSON dependency.
+///
+/// # Errors
+///
+/// Returns `Err` if the input is malformed, or if it ends before the document
+/// does — an unfinished document is not a complete one.
+///
+/// ```
+/// # use jawohl::{parse_complete, Value};
+/// assert_eq!(parse_complete("[1,2]").unwrap(), Value::Array(vec![
+///     Value::Number("1".parse().unwrap()),
+///     Value::Number("2".parse().unwrap()),
+/// ]));
+/// assert!(parse_complete("[1,2").is_err());
+/// ```
+pub fn parse_complete(input: &str) -> Result<Value, ParseError> {
+    let mut s = Stream::new();
+    s.push(input.as_bytes())?;
+    s.finish()?;
+    if !s.is_document_complete() {
+        return Err(ParseError {
+            offset: input.len(),
+            kind: ParseErrorKind::UnexpectedEndOfInput,
+        });
+    }
+    s.snapshot().ok_or(ParseError {
+        offset: 0,
+        kind: ParseErrorKind::UnexpectedEndOfInput,
+    })
 }
 
 /// Complete a truncated JSON document so that it parses.
