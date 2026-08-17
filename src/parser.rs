@@ -761,47 +761,6 @@ fn stable_prefix(decoded: &[u8]) -> String {
     }
 }
 
-/// The longest prefix of a partially-written number that is itself a complete,
-/// well-formed JSON number. `1e` yields `1`, `1.` yields `1`, `-` yields none.
-/// Used when completing a truncated document: emit the most that is certainly
-/// valid, drop what is not.
-pub(crate) fn terminable_number_prefix(text: &str) -> Option<&str> {
-    let mut state: Option<NumState> = None;
-    let mut best = 0usize;
-    for (i, c) in text.char_indices() {
-        let b = c as u8;
-        let next = match (state, b) {
-            (None, b'-') => Some(NumState::AfterSign),
-            (None, b'0') => Some(NumState::Zero),
-            (None, b'1'..=b'9') => Some(NumState::Int),
-            (Some(NumState::AfterSign), b'0') => Some(NumState::Zero),
-            (Some(NumState::AfterSign), b'1'..=b'9') => Some(NumState::Int),
-            (Some(NumState::Zero), b'.') => Some(NumState::Dot),
-            (Some(NumState::Zero), b'e' | b'E') => Some(NumState::Exp),
-            (Some(NumState::Int), b'0'..=b'9') => Some(NumState::Int),
-            (Some(NumState::Int), b'.') => Some(NumState::Dot),
-            (Some(NumState::Int), b'e' | b'E') => Some(NumState::Exp),
-            (Some(NumState::Dot), b'0'..=b'9') => Some(NumState::Frac),
-            (Some(NumState::Frac), b'0'..=b'9') => Some(NumState::Frac),
-            (Some(NumState::Frac), b'e' | b'E') => Some(NumState::Exp),
-            (Some(NumState::Exp), b'+' | b'-') => Some(NumState::ExpSign),
-            (Some(NumState::Exp), b'0'..=b'9') => Some(NumState::ExpDigits),
-            (Some(NumState::ExpSign), b'0'..=b'9') => Some(NumState::ExpDigits),
-            (Some(NumState::ExpDigits), b'0'..=b'9') => Some(NumState::ExpDigits),
-            _ => return if best > 0 { Some(&text[..best]) } else { None },
-        };
-        state = next;
-        if next.map(|s| s.terminable()).unwrap_or(false) {
-            best = i + c.len_utf8();
-        }
-    }
-    if best > 0 {
-        Some(&text[..best])
-    } else {
-        None
-    }
-}
-
 /// A plan for turning a truncated document into a valid one.
 pub(crate) struct Completion {
     /// How many bytes of the original input to keep.
