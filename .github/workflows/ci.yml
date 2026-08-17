@@ -53,6 +53,24 @@ jobs:
       - run: rm -f Cargo.lock
       - run: cargo build
 
+  # jawohl through jedem: one annotated surface, two generated bindings, both
+  # exercised by a real host process. Separate workspace, so none of this
+  # touches the published crate.
+  bindings:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      # Fails if the committed bindings no longer match the surface.
+      - run: cargo test -p jawohl-surface
+        working-directory: bindings
+      - run: ./bindings/run-python.sh
+      - run: ./bindings/run-node.sh
+
   packaging:
     runs-on: ubuntu-latest
     steps:

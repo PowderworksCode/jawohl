@@ -1,0 +1,11 @@
+# A separate workspace on purpose: the published `jawohl` crate gains no
+# dependency from any of this. It stays regex-automata and nothing else.
+[workspace]
+resolver = "2"
+members = ["surface", "python", "node"]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+publish = false

@@ -15,7 +15,7 @@ readme = "README.md"
 # The conformance corpus is a repo-level gate, not something a consumer of the
 # published crate re-runs -- and shipping the test without its 316-file corpus
 # would mean shipping a test that cannot pass.
-exclude = ["tests/corpus/**", "tests/conformance.rs", "images/**"]
+exclude = ["tests/corpus/**", "tests/conformance.rs", "images/**", "bindings/**"]
 
 [dependencies.regex-automata]
 version = "0.4"
