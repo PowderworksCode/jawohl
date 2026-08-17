@@ -474,269 +474,163 @@ is available if the schedule bites.
 
 ---
 
-## 10. Beyond JSON — a plan for other streamed formats
+## 10. Scope: JSON and Markdown, in every language jedem reaches
 
-Design only; nothing below is scheduled, and none of it is 2.0.
+Design only; nothing below is scheduled. Earlier drafts of this section surveyed
+seven formats. The scope is now **two**, and the rest are declined with reasons.
 
-### The value is reach, not technique
+### Why these two, and why the value is reach
 
-Surveying the field settles what jawohl is actually for, and it is not novelty.
-The techniques here are known and several teams have them. What almost nobody
-has is **the same capability in the language they work in**:
+The techniques here are known and several teams have them. What almost nobody has
+is **the same capability in the language they work in**:
 
 | | streaming markdown | partial JSON |
 |---|---|---|
-| JavaScript / TypeScript | a dozen (streamdown, semidown, streaming-markdown, …) | several |
-| Rust | several (flux-md-core, brookmd-core, mdstream, mdstitch) | jiter's partial mode |
+| JavaScript / TypeScript | a dozen | several |
+| Rust | several | jiter's partial mode |
 | Python | one, over markdown-it-py | `partial-json-parser` |
 | Java, PHP, C#, Ruby, Go, Swift | **blog posts about approaches** | essentially nothing |
 
 That is the whole opportunity. A Python developer building a chat UI has one
-option; a Java, PHP or C# developer has none, and writes the repair logic by
-hand or renders prose. jawohl plus jedem is one Rust core and a binding in each
-of those languages — which is worth more than any single technique in the table
-above.
+option; a Java, PHP or C# developer has none and writes the repair logic by hand.
+jawohl plus jedem is one Rust core and a binding in each of those languages,
+which is worth more than any single technique above.
 
-So the ranking question for a format is **not** "is this technically novel?" but
-"how many languages want it and have nothing?" An earlier draft of this section
-ranked by novelty and reached the wrong answer on markdown as a result.
+JSON and Markdown are also simply **what models emit.** Tool calls and structured
+output are JSON; everything a model says to a human is Markdown. Between them
+they cover essentially all streamed model output that anyone renders or acts on.
 
-**This plan is bounded by jedem.** Every format below is worth only as many
-languages as jedem can deliver it to; a format shipped Rust-only is a format
-that has not taken the opportunity. That coupling is the reason jedem is a
-sibling project rather than a convenience.
+**This plan is bounded by jedem.** Each format is worth only as many languages as
+jedem delivers it to; shipped Rust-only, it has declined its own reason for
+existing.
 
-### What actually generalises
+### Why not the others
 
-jawohl's contribution is a four-part contract on top of a parser:
+- **HTML — declined on security** (see below), and its implied closes make
+  "complete" a judgement call rather than a guarantee.
+- **YAML** — validation would come free (its schema story *is* JSON Schema), but
+  the stability guarantee nearly collapses: a plain scalar may continue onto the
+  next line and a block ends only at dedent, so almost nothing completes
+  promptly. Revisit on demand.
+- **XML** — technically the best fit of any format, since XSD's Unique Particle
+  Attribution makes content models deterministic regexes over children, so
+  prefix-liveness is exact and needs no anchoring caveat. But XSD lives where
+  regulation mandates it, no model emits one, and it is absent from the
+  LLM-native path. Best fit, fewest users.
+- **TOML, CSV** — cheap and both validate with JSON Schema or Table Schema, but
+  neither is a common model output format.
 
-1. **Path-addressed partial state** — `/messages/0/role` is `Incomplete`.
-2. **A stability guarantee** — once `Complete`, the value cannot change.
-3. **An event log** — what changed, not a snapshot to diff.
-4. **Prefix validation** — this constraint is *already* decided.
+### Security is why HTML is out — and Markdown is not automatically safe
 
-Only (1) needs anything format-specific, and only the parser needs replacing.
-The right shape is a format-independent core — paths, states, stability, events,
-the constraint IR and evaluator — with the tokenizer behind a trait, and one
-crate per format above it. That split should happen **before** the second format,
-not during it, or JSON's assumptions calcify into the shared layer.
+Streaming model output into a renderer is an injection surface. The output is
+untrusted text; HTML is a language for making a browser do things. Generating it
+from model output means prompt injection and XSS are not edge cases but the
+expected traffic. jawohl will not build the thing that makes that easy.
 
-Not every format uses all four. Prose has nothing to validate. That makes those
-formats a smaller product, not a disqualified one.
+**Three consequences follow for Markdown, and they are design constraints, not
+caveats:**
 
-### The technical finding that constrains everything
+**1. Markdown is not HTML-free.** CommonMark permits raw HTML blocks and inline
+HTML, so a naive Markdown pipeline is an HTML pipeline with extra steps. Every
+serious streaming renderer in the field sanitizes downstream for exactly this
+reason. jawohl's position: **raw HTML is surfaced as its own event kind, never
+folded silently into text.** A consumer must decide about it explicitly; the
+default must not be "it looked like prose, so we passed it through."
 
-**The stability guarantee is weaker in every other format, and in YAML it nearly
-collapses.**
+**2. Speculative closure can synthesise syntax that was never in the input.**
+This hazard is specific to what jawohl does and has no analogue in batch parsing.
+Repairing a truncated construct means *writing markup the model never emitted* —
+and a partial `<a href="javascript:` or a half-arrived attribute could be
+"completed" into something executable. The rule is therefore: **repair may close
+constructs that are inert, and must never close an HTML construct.** An unclosed
+code fence gets its fence; an unclosed tag gets nothing but an event saying so.
 
-JSON is unusually friendly: a string ends at its quote, a container at its
-bracket, and only numbers need a following delimiter. That last case is already
-the one that trips people up (§3.2). Elsewhere, *almost every value* is the
-number case:
+**3. The stability guarantee has a security reading.** Acting on a value that is
+`Complete` is safer than acting on a prefix, because a prefix can still change
+meaning — `"http` may become `"https://…"` or `"javascript:…"`. This is a second
+argument for the guarantee jawohl already provides, and the reason
+`ValueCompleted` rather than `ValueProgressed` should be the documented point at
+which a consumer acts on anything that will reach a renderer or a tool.
 
-| format | when is a scalar `Complete`? |
+Sanitisation itself stays the consumer's job — jawohl emits structure, it does
+not render — but jawohl must not make that job harder by inventing syntax, and
+must not hide the parts that need sanitising.
+
+### What Markdown inherits, and what it does not
+
+Three of the four contract parts apply. Prose has nothing to validate, so C3 and
+C4 sit out — **except at the frontmatter**, which is YAML or TOML and therefore
+validates with JSON Schema. Validating a document's frontmatter while its body
+streams falls out for free, and is a real static-site and CMS case.
+
+The stability rules differ from JSON's and are the substance of the work:
+
+| construct | `Complete` when |
 |---|---|
-| JSON | quote / bracket; numbers need a delimiter |
-| XML | at the closing tag — explicit and prompt |
-| Markdown | block ends at a blank line, fence at its closing fence; a paragraph is not a paragraph until the next line rules out a setext heading |
-| TOML | end of line, unless a multi-line string or array is open |
-| CSV | at the delimiter, unless the field is quoted |
-| YAML | **often not until the next line's indentation arrives** — a plain scalar may continue across lines, and a block ends only at dedent |
-| HTML | never quite: implied closes and error recovery make "complete" a judgement call |
+| fenced code | the closing fence arrives |
+| paragraph | a blank line — and not before the *next* line rules out a setext heading |
+| list item | the next item, a dedent, or a blank line |
+| table row | the newline, unless a cell is still open |
+| inline emphasis | the closing run, which may never arrive |
+| link | the closing `)`; a half-written `[text](htt` is not a link yet |
 
-A consumer's reason to use jawohl is acting early on values that will not
-change. Where a format cannot say `Complete` promptly, jawohl delivers less
-there — and the honest response is to say so per format rather than present one
-guarantee and quietly weaken it.
+Two findings from the field, both worth adopting:
 
-### Two findings worth stealing
+- **Repair has a priority order, and it is empirical.** The convergent order is
+  unclosed code fences first (most visually jarring), then emphasis, inline code,
+  links, math. Some repairs matter far more to a reader than others.
+- **Repair must be context-aware.** A `**` inside a fenced code block is Python
+  exponentiation, not emphasis; closing it corrupts the code. Same class as
+  jawohl's escape-state tracking, where a trailing `\` must not be read as
+  closing a string.
 
-From the markdown field, and both generalise past it:
-
-- **Repair has a priority order, and it is empirical rather than structural.**
-  The convergent order is: unclosed code fences first (most visually jarring),
-  then emphasis markers, inline code, links, math. Worth remembering whenever
-  `complete_json`'s behaviour is tuned — some repairs matter far more to a
-  reader than others.
-- **Repair must be context-aware, and the failure is subtle.** A `**` inside a
-  fenced code block is Python exponentiation, not emphasis; closing it corrupts
-  the code. Same class as jawohl's escape-state tracking, where a trailing `\`
-  must not be read as closing a string — evidence the rule generalises.
-
-And one architectural note in our favour. Most of the JS field does
+And one architectural note in our favour: most of the JS field does
 **repair-then-reparse-the-whole-string** rather than true incremental parsing,
-which is quadratic over a stream and produces a documented bug class: `marked`'s
+which is quadratic over a stream and produces a documented bug class — `marked`'s
 lexer emits a code token only once the closing fence arrives, so an unclosed
 fence is classified as a *paragraph* and renders as prose until it suddenly
-flips. That is exactly jawohl 1.0's failure — a parser built for complete
-documents misclassifying a prefix — and exactly what a real state machine
-avoids.
+flips. That is exactly jawohl 1.0's failure, and exactly what a real state
+machine avoids.
 
-### Is there a JSON Schema for each?
+### Why the validation half is worth keeping
 
-Yes for almost all of them, and the answer is usually *JSON Schema itself*.
+JSON Schema is not one option among several; it is the schema layer. OpenAPI 3.1
+adopted it outright, and Anthropic, OpenAI and Google now all enforce it at the
+*sampling* level with grammar-constrained decoding. It is the interface to the
+model, not a thing you check afterwards.
 
-| format | schema language in practice | reuses jawohl's constraint IR? |
-|---|---|---|
-| YAML | **JSON Schema.** What Kubernetes, GitHub Actions, OpenAPI and docker-compose all actually validate with | **directly** |
-| TOML | **JSON Schema.** `taplo` validates against Draft 4 via a `#:schema` comment; `tombi` likewise | **directly** |
-| CSV | **Table Schema** (Frictionless) and CSVW — JSON documents describing field types, patterns and constraints | mostly; needs a tabular mapping |
-| Markdown | none for prose — but **frontmatter is YAML or TOML**, so the frontmatter validates with JSON Schema | at the frontmatter only |
-| XML | **its own mature stack**: XSD, RELAX NG, Schematron, DTD | no — but see below |
-| HTML | RELAX NG plus custom rules (how validator.nu works); not consumer-facing | no |
-| SSE / JSONL | n/a — framing; the payload's own schema applies | inherited |
-
-**But none of them is remotely as common as JSON Schema, and the table should
-not be read as implying parity.** Adoption is wildly lopsided:
-
-- **JSON Schema is in a class of its own, and language models are widening the
-  gap.** OpenAPI 3.1 adopted JSON Schema 2020-12 outright, ~85% of public APIs
-  ship JSON, and — the decisive part — Anthropic, OpenAI and Google now all
-  enforce JSON Schema *at the sampling level* with grammar-constrained decoding.
-  It is no longer a thing you check output against; it is the interface to the
-  model.
-- **XSD is the only one with a comparable install base, and it is a regulated
-  one.** SWIFT, HL7, SAML and government filing move enormous volume through it,
-  but it survives where a standard mandates it rather than where anyone picks it.
-  Nobody starting today chooses XSD, and no model emits one.
-- **Everything else is niche.** RELAX NG lives inside document toolchains and
-  validator internals; Schematron sits beside XSD in a few industries; Table
-  Schema and CSVW belong to the open-data community. None is a mass standard.
-
-The practical reading for this plan: **the constraint work already done is the
-constraint work that matters.** YAML, TOML and CSV borrow JSON Schema precisely
-*because* it won, so C3 and C4 are not one option among several — they are the
-schema layer, and every format below inherits them or has no mass-market schema
-story at all.
-
-Two consequences, and the second corrects this document.
-
-**Most of these formats validate with JSON Schema, so C3 and C4 transfer nearly
-unchanged.** YAML, TOML and CSV all map onto a JSON-ish data model, which is
-exactly why the ecosystem reached for JSON Schema rather than inventing
-something. The constraint IR, the monotonicity classification, the evaluator and
-`NumberProfile` are all reusable; what changes is the parser feeding them. The
-fourth part of the contract is therefore available in far more places than an
-earlier draft of this section assumed.
-
-**XML is not the poor relation here — it is the best-suited format of all, and
-this document previously said the opposite.** XSD's Unique Particle Attribution
-rule requires every content model to be *deterministic*: an element must match
-exactly one particle without lookahead. It exists, in the W3C's own words, so
-that content "can be validated without looking ahead more than one tag, which
-allows simple, streaming implementations." That is a schema language whose
-central constraint was designed for precisely what jawohl does.
-
-Concretely: an XSD content model like `(a, b+, c?)` is a regular expression over
-child elements, and UPA guarantees it compiles to a DFA with no ambiguity. Asking
-"can this sequence of children still be completed validly?" is then **exactly the
-dead-state question** jawohl already answers for `pattern` (§C3) — and unlike
-`pattern`, it needs no anchoring caveat, because a content model is anchored by
-construction. Prefix validation over XML is on *better* theoretical footing than
-over JSON, where numeric bounds forced the `NumberProfile` compromise.
-
-The catch is demand, and it is a bigger catch than "not capability" suggests:
-XSD is heavy, no model emits one, and its living deployments are the regulated
-ones above. Its value here would be validating model output against a schema the
-*consumer* already owns — real in enterprise integration, absent from the
-LLM-native path. Technically the best fit in the list; practically the one
-fewest people would use.
-
-### Why the validation half is worth more than it looks
-
-One finding from the survey sharpens the case for C3 and C4 beyond jawohl's own
-formats.
-
-Now that providers constrain decoding with JSON Schema, the reliability question
+Which raises the argument that most justifies C3 and C4: the reliability question
 has moved from *"will the model emit valid JSON?"* to **"which slice of JSON
-Schema does this provider actually honour?"** — and the slices differ enough to
-matter. Anthropic drops numeric bounds, OpenAI bans unions and imposes ceilings,
-Gemini's limits are undocumented. The same schema can be enforced on one
-provider and **silently weakened** on another, with no error and no signal.
+Schema does this provider actually honour?"** Anthropic drops numeric bounds,
+OpenAI bans unions and imposes ceilings, Gemini's limits are undocumented. The
+same schema can be enforced on one provider and **silently weakened** on another,
+with no error and no signal.
 
-That is exactly the failure mode jawohl exists to refuse. A constraint the
-provider quietly ignored is a constraint nobody checked — unless the consumer
-checks it themselves, incrementally, as the output arrives. jawohl's validation
-is therefore not a duplicate of provider-side constraint decoding; it is the
-**backstop for the parts the provider dropped**, and the lowering report is the
-one place a caller is told which constraints are actually live.
+That is the failure mode jawohl exists to refuse. A constraint the provider
+quietly ignored is a constraint nobody checked, unless the consumer checks it
+themselves as output arrives. jawohl's validation is not a duplicate of
+provider-side constraint decoding — it is the **backstop for the parts the
+provider dropped**, and the lowering report is where a caller learns which
+constraints are actually live.
 
-### Format by format
+### The plan
 
-**SSE framing + JSONL — first, and it is not close.** Neither is a data format;
-both are framing around documents jawohl already handles. SSE is *how every LLM
-API actually delivers* the JSON jawohl exists to parse, so today every caller
-strips `data:` lines by hand first. JSONL is a document sequence. No new
-stability analysis, no new grammar, and it lands in every language jedem
-reaches on day one.
-
-**Markdown — high, and previously misjudged twice.** The most-streamed LLM
-output there is, and incremental rendering is a real and widely-felt problem. The field
-has converged on our own model — `flux-md-core` and `brookmd-core` promise
-"committed blocks never change" with a `Patch` per append and stable block IDs;
-`mdstream` says "committed + pending blocks"; `mdstitch` closes unterminated
-syntax token-by-token, which is `complete_json` for markdown. Take that
-convergence as evidence the four-part decomposition is right, not as a reason to
-stay out: **it exists in two languages, and every other language's developers
-are writing repair logic by hand.** Only three of the four parts apply, since
-prose has nothing to validate — though **frontmatter does**, and validating a
-document's YAML or TOML frontmatter with JSON Schema while the body streams is a
-real static-site and CMS use case that falls out for free. A smaller product,
-delivered far wider.
-
-**XML and tag-structured output — the technically richest, if demand appears.**
-Well-formedness is strict and closing tags explicit, so stability is nearly as
-good as JSON's: an element completes at its close tag, text at the next `<`.
-Several tool-call conventions are tag-flavoured rather than JSON. And, contrary
-to what this section said before checking, **all four contract parts apply, with
-the validation half on better footing than JSON's** — see UPA above. The limit is
-demand rather than capability: XSD is heavy and no model emits one, so its use
-would be validating output against a schema the consumer already owns.
-
-**YAML — validation comes free, stability does not.** Its schema story *is*
-JSON Schema, so C3 and C4 transfer with no new constraint work at all; the entire
-difficulty is the parser and the guarantee. Beyond the completeness problem above,
-anchors and aliases (`&a` / `*a`) mean a value can
-reference another, so path-addressing meets a graph rather than a tree, and
-multi-document streams (`---`) need the JSONL sequencing story first. YAML is a
-JSON superset, so a shared core is plausible. Worth doing eventually; be explicit
-that its `Complete` set is much smaller.
-
-**TOML and CSV — cheap, and validation is free.** Both are line-oriented with
-tractable stability rules; CSV's field-ends-at-delimiter rule is *exactly* JSON's
-number rule. TOML validates with JSON Schema (`taplo`, `tombi`) and CSV with
-Table Schema, so both reuse the constraint layer directly. Neither is a common
-model output format, which is the only reason they rank low.
-
-**HTML — defer.** Error recovery and implied close tags make "complete" a
-judgement call rather than a guarantee, which is the one thing jawohl sells.
-`lol_html` covers streaming rewriting well already.
-
-### Recommended order
-
-1. **SSE + JSONL framing** — near-free, universal, and how LLM JSON actually
-   arrives.
-2. **Extract the format-independent core**, before a second grammar exists.
-3. **Markdown** — the largest underserved audience, and three of the four
-   contract parts apply.
-4. **XML / tag-structured** — the first genuinely different grammar with prompt
-   stability, and the only one where all four contract parts apply with the
-   validation half on better footing than JSON's.
-5. Reassess. **YAML** when someone asks — its validation is free, its guarantee
-   is weak. **TOML/CSV** if a data-pipeline consumer appears; both reuse the
-   constraint layer directly. **HTML** deferred.
-
-Note how little of this is new validation work: YAML, TOML and CSV all validate
-with JSON Schema or a JSON-shaped equivalent, so C3 and C4 carry over and the
-parser is the only thing being built. XML is the exception, and its schema stack
-is *better* suited to prefix validation than JSON's, not worse.
-
-Throughout: a format is only as valuable as the number of languages it reaches,
-so jedem's backend coverage gates this list more than any parser work does.
+1. **SSE + JSONL framing.** Neither is a data format; both are framing around
+   JSON jawohl already handles, and SSE is how every provider actually delivers
+   it — today every caller strips `data:` lines by hand. No new grammar, no new
+   stability analysis, and it lands in every jedem language at once.
+2. **Extract the format-independent core** — paths, states, stability, events,
+   constraint IR, evaluator — with the tokenizer behind a trait. Before the
+   second grammar exists, not during it.
+3. **Markdown**, under the constraints above: raw HTML as its own event, repair
+   that never closes an HTML construct, and the stability table as the spec.
+4. **Breadth over depth from there.** A third format is worth less than the
+   second and third *language*, because reach is the value.
 
 ### What would make this a mistake
 
-Shipping a second format before extracting the core, so JSON's assumptions
-harden into the shared layer. Presenting one stability guarantee across formats
-when the table above says it differs. Or shipping formats Rust-only — which
-would be doing the work and declining the reason for it.
+Shipping a second format before extracting the core, so JSON's assumptions harden
+into the shared layer. Presenting one stability guarantee across formats when the
+table above says it differs. Repairing HTML constructs, or letting raw HTML reach
+a consumer without saying so. Or shipping either format Rust-only — which would
+be doing the work and declining the reason for it.
