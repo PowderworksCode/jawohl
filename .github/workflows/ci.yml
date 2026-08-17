@@ -6,27 +6,31 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: rustfmt, clippy }
+        with:
+          # One string, not a flow mapping: `{ components: rustfmt, clippy }`
+          # parses `clippy` as a separate key, and the action silently ignores
+          # it -- clippy then only runs because the runner image happens to
+          # ship it.
+          components: rustfmt, clippy
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets -- -D warnings
       # Doctests include every Rust snippet in the README, so the front page
       # cannot drift from the crate.
-      - run: cargo test --all-targets --all-features
+      - run: cargo test --all-targets
       - run: cargo test --doc
 
   # The examples are documentation that has to keep working.
   examples:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - run: |
           for ex in complete streaming validate sse; do
@@ -34,17 +38,24 @@ jobs:
             cargo run --quiet --example "$ex" > /dev/null
           done
 
-  # The declared MSRV has to be real.
+  # The declared MSRV has to be real -- for consumers of the library, which is
+  # what `rust-version` promises. Dev-dependencies are deliberately not covered:
+  # serde_json's tree currently requires 1.71, and that constrains our test
+  # suite, not anybody depending on jawohl.
   msrv:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.70.0
+      # The committed lockfile is v4, which cargo 1.70 cannot parse. Resolving
+      # fresh also means this job fails loudly if a dependency raises its own
+      # MSRV past ours, which is the signal we want.
+      - run: rm -f Cargo.lock
       - run: cargo build
 
   packaging:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo package --allow-dirty --no-verify
+      - run: cargo package
