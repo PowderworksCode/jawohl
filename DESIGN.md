@@ -436,14 +436,19 @@ is available if the schedule bites.
 
 ## 9. Risks and open questions
 
-1. **`oneOf` and `anyOf` cost.** Early rejection under `anyOf` needs live state
-   for every branch, and branches can nest. Bounded in practice by real tool-call
-   schemas, but a pathological schema is a blowup. Needs a cap and a documented
-   degradation to "no early verdict." [speculation]
-2. **`$ref` and recursion.** Not in the owner's doc. Recursive schemas
-   (`{"$ref": "#"}`) mean the constraint IR is a graph, not a tree, and per-path
-   state must be allocated lazily. Decide whether 2.0 supports `$ref` at all;
-   omitting it is defensible for a v1 and must be reported by §6.2.
+1. **`oneOf` / `anyOf` / `not` are decided at completion, not incrementally.**
+   Judging them on a prefix needs live state for every branch, and branches
+   nest. The shipped behaviour is the documented degradation: `Pending` until
+   the value is whole, never a guess. `allOf` is an intersection and composes
+   incrementally for free. Revisit if a consumer needs early rejection through
+   a union — it would need a branch-count cap.
+2. **`$ref` and recursion — resolved: supported.** Omitting it looked
+   defensible on paper and is not: Pydantic emits `$defs` plus `$ref` for every
+   nested model, as does `zod-to-json-schema`, so a schema-first consumer hits
+   it immediately. The constraint IR is therefore an arena rather than a tree,
+   since `{"$ref": "#"}` is a cycle; recursive and mutually recursive refs
+   resolve by handing back the node under construction. Remote refs are refused
+   rather than fetched — jawohl does no I/O.
 3. **Which JSON Schema draft.** 2020-12 presumably. `unevaluatedProperties` is
    materially harder to evaluate incrementally than `additionalProperties` and is
    a candidate for explicit non-support.
@@ -466,3 +471,105 @@ is available if the schedule bites.
    consumer from day one, §8's surface track is therefore gated end to end on
    jedem steps 3–5. The core track (C1–C4) is unaffected and remains the right
    place to spend the wait.
+
+---
+
+## 10. Beyond JSON — a plan for other streamed formats
+
+Design only; nothing below is scheduled, and none of it is 2.0.
+
+### What actually generalises
+
+jawohl's contribution is not "parse JSON incrementally" — streaming parsers
+exist for every format listed here. It is a four-part contract on top of one:
+
+1. **Path-addressed partial state** — `/messages/0/role` is `Incomplete`.
+2. **A stability guarantee** — once `Complete`, the value cannot change.
+3. **An event log** — what changed, not a snapshot to diff.
+4. **Prefix validation** — this constraint is *already* decided.
+
+Only (1) needs anything format-specific, and only the parser needs replacing.
+The right shape is therefore a format-independent core — paths, states,
+stability, events, the constraint IR and evaluator — with the tokenizer behind
+a trait, and one crate per format above it. That split should happen *before*
+the second format, not during it, or the JSON assumptions calcify.
+
+### The finding that governs everything else
+
+**The stability guarantee is weaker in every other format, and in YAML it
+nearly collapses.**
+
+JSON is unusually friendly: a string ends at its quote, a container at its
+bracket, and only numbers need a following delimiter. That last case is already
+the one that trips people up (§3.2). In most other formats, *almost every value*
+is the number case:
+
+| format | when is a scalar `Complete`? |
+|---|---|
+| JSON | quote / bracket; numbers need a delimiter |
+| XML | at the closing tag — explicit and prompt |
+| TOML | at end of line, unless a multi-line string or array is open |
+| CSV | at the delimiter, unless the field is quoted |
+| YAML | **often not until the *next* line's indentation arrives**, because a plain scalar may continue across lines and a block ends only at dedent |
+| HTML | never quite: implied closes and error recovery make "complete" a judgement call |
+
+A consumer's whole reason to use jawohl is acting early on values that will not
+change. If a format cannot say `Complete` until much later, jawohl delivers far
+less there — and the honest response is to say so per format rather than to
+present one guarantee and quietly weaken it.
+
+### Format by format
+
+**SSE framing + JSONL — do this first.** Neither is a data format; both are
+framing around documents jawohl already handles. SSE is *how every LLM API
+actually delivers* the JSON jawohl exists to parse, so today a caller must strip
+`data:` lines themselves before feeding us. JSONL is a document sequence.
+Together they are a small amount of work for the largest share of real use, and
+they need no new stability analysis at all. **Highest value-to-cost by a wide
+margin.**
+
+**XML and tag-structured output — do this second.** Well-formedness is strict
+and closing tags are explicit, so stability is nearly as good as JSON: an
+element completes at its close tag, text at the next `<`. Real relevance —
+several tool-call conventions are tag-flavoured rather than JSON. Validation has
+no clean analogue (XSD is heavy and nobody emits it for LLM output), so the
+first version would be parse-and-partial-state only, with the constraint layer
+left off rather than faked.
+
+**Markdown — high demand, different product.** The most-streamed LLM output
+there is, and incremental rendering is a real, widely-felt problem: knowing a
+code fence has closed or a table row is final. But there is nothing to validate,
+so only two of the four contract parts apply. Worth doing, worth *not* pretending
+it is the same product. Note `codewandler-markdown-stream` already does chunk-safe
+incremental CommonMark; the question is whether jawohl adds the stability and
+path model on top or leaves it alone.
+
+**YAML — hardest, and the guarantee suffers.** Beyond the completeness problem
+above, anchors and aliases (`&a` / `*a`) mean a value can reference another, so
+path-addressing meets a graph rather than a tree, and multi-document streams
+(`---`) need the JSONL sequencing story first. YAML is also a JSON superset, so
+a shared core is plausible. My read: **defer until something demands it**, and be
+explicit that its `Complete` set is much smaller.
+
+**TOML and CSV — cheap, low demand.** Both are line-oriented with tractable
+stability rules; CSV's field-ends-at-delimiter rule is *exactly* JSON's number
+rule, and column types give validation something real to check. Neither is a
+common LLM output format. Do them if a data-pipeline consumer appears.
+
+**HTML — defer.** Error recovery and implied close tags make "complete" a
+judgement call rather than a guarantee, which is the one thing jawohl sells.
+`lol_html` already covers streaming rewriting well.
+
+### Recommended order
+
+1. **SSE + JSONL framing** — near-free, and it is how LLM JSON actually arrives.
+2. **Extract the format-independent core**, before a second grammar exists.
+3. **XML / tag-structured** — the first genuinely different grammar.
+4. Reassess. Markdown if incremental rendering is the goal; YAML only on demand.
+
+### What would make this a mistake
+
+Shipping a second format before extracting the core, so JSON's assumptions
+harden into the shared layer. Or presenting one stability guarantee across
+formats when the table above says it differs — that would trade the single
+property jawohl is trusted for against breadth nobody asked for.
