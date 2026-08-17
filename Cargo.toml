@@ -1,23 +1,27 @@
 [package]
 name = "jawohl"
-version = "0.1.1-dev"
+version = "0.2.0"
 edition = "2021"
-authors = ["Zack Maril <zack@genau.ai>"]
-description = "Complete JSON documents from a stream of JSON tokens"
-keywords = []
+rust-version = "1.70"
+authors = ["Zack Maril"]
+description = "Incremental parser and validator for streaming JSON — parse and validate LLM output while it is still being generated"
+keywords = ["json", "streaming", "incremental", "llm", "parser"]
+categories = ["parser-implementations", "encoding", "text-processing"]
 license = "MIT"
-documentation = "https://genau.ai"
-homepage = "https://github.com/genauai/jawohl"
-repository = "https://github.com/genauai/jawohl"
+documentation = "https://docs.rs/jawohl"
+homepage = "https://github.com/PowderworksCode/jawohl"
+repository = "https://github.com/PowderworksCode/jawohl"
 readme = "README.md"
+# The conformance corpus is a repo-level gate, not something a consumer of the
+# published crate re-runs -- and shipping the test without its 316-file corpus
+# would mean shipping a test that cannot pass.
+exclude = ["tests/corpus/**", "tests/conformance.rs", "images/**"]
 
-[dependencies]
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dev-dependencies]
-serde_json = "1.0.96"
 [dependencies.regex-automata]
 version = "0.4"
 default-features = false
 features = ["std", "syntax", "dfa-build", "dfa-search", "unicode"]
+
+[dev-dependencies]
+# Used only to check, in tests, that what jawohl produces really is JSON.
+serde_json = "1"
