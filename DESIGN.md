@@ -478,10 +478,37 @@ is available if the schedule bites.
 
 Design only; nothing below is scheduled, and none of it is 2.0.
 
+### The value is reach, not technique
+
+Surveying the field settles what jawohl is actually for, and it is not novelty.
+The techniques here are known and several teams have them. What almost nobody
+has is **the same capability in the language they work in**:
+
+| | streaming markdown | partial JSON |
+|---|---|---|
+| JavaScript / TypeScript | a dozen (streamdown, semidown, streaming-markdown, …) | several |
+| Rust | several (flux-md-core, brookmd-core, mdstream, mdstitch) | jiter's partial mode |
+| Python | one, over markdown-it-py | `partial-json-parser` |
+| Java, PHP, C#, Ruby, Go, Swift | **blog posts about approaches** | essentially nothing |
+
+That is the whole opportunity. A Python developer building a chat UI has one
+option; a Java, PHP or C# developer has none, and writes the repair logic by
+hand or renders prose. jawohl plus jedem is one Rust core and a binding in each
+of those languages — which is worth more than any single technique in the table
+above.
+
+So the ranking question for a format is **not** "is this technically novel?" but
+"how many languages want it and have nothing?" An earlier draft of this section
+ranked by novelty and reached the wrong answer on markdown as a result.
+
+**This plan is bounded by jedem.** Every format below is worth only as many
+languages as jedem can deliver it to; a format shipped Rust-only is a format
+that has not taken the opportunity. That coupling is the reason jedem is a
+sibling project rather than a convenience.
+
 ### What actually generalises
 
-jawohl's contribution is not "parse JSON incrementally" — streaming parsers
-exist for every format listed here. It is a four-part contract on top of one:
+jawohl's contribution is a four-part contract on top of a parser:
 
 1. **Path-addressed partial state** — `/messages/0/role` is `Incomplete`.
 2. **A stability guarantee** — once `Complete`, the value cannot change.
@@ -489,124 +516,123 @@ exist for every format listed here. It is a four-part contract on top of one:
 4. **Prefix validation** — this constraint is *already* decided.
 
 Only (1) needs anything format-specific, and only the parser needs replacing.
-The right shape is therefore a format-independent core — paths, states,
-stability, events, the constraint IR and evaluator — with the tokenizer behind
-a trait, and one crate per format above it. That split should happen *before*
-the second format, not during it, or the JSON assumptions calcify.
+The right shape is a format-independent core — paths, states, stability, events,
+the constraint IR and evaluator — with the tokenizer behind a trait, and one
+crate per format above it. That split should happen **before** the second format,
+not during it, or JSON's assumptions calcify into the shared layer.
 
-### The finding that governs everything else
+Not every format uses all four. Prose has nothing to validate. That makes those
+formats a smaller product, not a disqualified one.
 
-**The stability guarantee is weaker in every other format, and in YAML it
-nearly collapses.**
+### The technical finding that constrains everything
+
+**The stability guarantee is weaker in every other format, and in YAML it nearly
+collapses.**
 
 JSON is unusually friendly: a string ends at its quote, a container at its
 bracket, and only numbers need a following delimiter. That last case is already
-the one that trips people up (§3.2). In most other formats, *almost every value*
-is the number case:
+the one that trips people up (§3.2). Elsewhere, *almost every value* is the
+number case:
 
 | format | when is a scalar `Complete`? |
 |---|---|
 | JSON | quote / bracket; numbers need a delimiter |
 | XML | at the closing tag — explicit and prompt |
-| TOML | at end of line, unless a multi-line string or array is open |
+| Markdown | block ends at a blank line, fence at its closing fence; a paragraph is not a paragraph until the next line rules out a setext heading |
+| TOML | end of line, unless a multi-line string or array is open |
 | CSV | at the delimiter, unless the field is quoted |
-| YAML | **often not until the *next* line's indentation arrives**, because a plain scalar may continue across lines and a block ends only at dedent |
+| YAML | **often not until the next line's indentation arrives** — a plain scalar may continue across lines, and a block ends only at dedent |
 | HTML | never quite: implied closes and error recovery make "complete" a judgement call |
 
-A consumer's whole reason to use jawohl is acting early on values that will not
-change. If a format cannot say `Complete` until much later, jawohl delivers far
-less there — and the honest response is to say so per format rather than to
-present one guarantee and quietly weaken it.
+A consumer's reason to use jawohl is acting early on values that will not
+change. Where a format cannot say `Complete` promptly, jawohl delivers less
+there — and the honest response is to say so per format rather than present one
+guarantee and quietly weaken it.
 
-### Format by format
+### Two findings worth stealing
 
-**SSE framing + JSONL — do this first.** Neither is a data format; both are
-framing around documents jawohl already handles. SSE is *how every LLM API
-actually delivers* the JSON jawohl exists to parse, so today a caller must strip
-`data:` lines themselves before feeding us. JSONL is a document sequence.
-Together they are a small amount of work for the largest share of real use, and
-they need no new stability analysis at all. **Highest value-to-cost by a wide
-margin.**
+From the markdown field, and both generalise past it:
 
-**XML and tag-structured output — do this second.** Well-formedness is strict
-and closing tags are explicit, so stability is nearly as good as JSON: an
-element completes at its close tag, text at the next `<`. Real relevance —
-several tool-call conventions are tag-flavoured rather than JSON. Validation has
-no clean analogue (XSD is heavy and nobody emits it for LLM output), so the
-first version would be parse-and-partial-state only, with the constraint layer
-left off rather than faked.
-
-**Markdown — high demand, and the one I would now decline.** Revised after
-surveying the field, which turns out to be crowded and to have arrived at
-jawohl's own model without us.
-
-`flux-md-core` and `brookmd-core` describe themselves as "incremental,
-streaming-aware markdown parser with speculative closure", and their contract is
-ours almost word for word: *committed blocks never change*, each `append` returns
-a `Patch` of what moved, blocks carry stable monotonic IDs. `mdstream` advertises
-"committed + pending blocks". `mdstitch` "closes unterminated syntax
-token-by-token" — which is `complete_json` for markdown. On the JS side Vercel's
-Streamdown does the same repair via its `remend` preprocessor, and semidown,
-solid-streaming-markdown and llmrender all occupy the same ground.
-
-That convergence is worth taking as **evidence the four-part contract is the
-right decomposition** — several teams reached it independently. It is also the
-reason not to enter: the two parts jawohl would bring are already there, and the
-part that makes jawohl distinct — prefix *validation* — has no analogue, because
-there is nothing to validate in prose. We would arrive late with no
-differentiator.
-
-Two transferable findings from that survey, both of which apply to formats we
-*do* take:
-
-- **Repair has a priority order, and it is empirical, not structural.** The
-  field converges on: unclosed code fences first (most visually jarring), then
-  bold/italic markers, inline code, links, math. Worth remembering when
-  `complete_json`'s behaviour is ever tuned — some repairs matter far more to a
+- **Repair has a priority order, and it is empirical rather than structural.**
+  The convergent order is: unclosed code fences first (most visually jarring),
+  then emphasis markers, inline code, links, math. Worth remembering whenever
+  `complete_json`'s behaviour is tuned — some repairs matter far more to a
   reader than others.
 - **Repair must be context-aware, and the failure is subtle.** A `**` inside a
   fenced code block is Python exponentiation, not emphasis; closing it corrupts
-  the code. This is the same class as jawohl's escape-state tracking, where a
-  trailing `\` must not be treated as closing a string — and evidence that the
-  rule generalises past JSON.
+  the code. Same class as jawohl's escape-state tracking, where a trailing `\`
+  must not be read as closing a string — evidence the rule generalises.
 
-One architectural note in our favour, if the decision is ever revisited. Most of
-the JS field does **repair-then-reparse-the-whole-string** rather than true
-incremental parsing, which is quadratic over a stream and causes a documented
-class of bug: `marked`'s lexer only emits a code token once the closing fence
-arrives, so an unclosed fence is classified as a *paragraph* and renders as prose
-until it suddenly flips. That is precisely jawohl 1.0's failure — a parser built
-for complete documents misclassifying a prefix — and precisely what a real state
-machine avoids. Better architecture in a market that has not asked for it.
+And one architectural note in our favour. Most of the JS field does
+**repair-then-reparse-the-whole-string** rather than true incremental parsing,
+which is quadratic over a stream and produces a documented bug class: `marked`'s
+lexer emits a code token only once the closing fence arrives, so an unclosed
+fence is classified as a *paragraph* and renders as prose until it suddenly
+flips. That is exactly jawohl 1.0's failure — a parser built for complete
+documents misclassifying a prefix — and exactly what a real state machine
+avoids.
 
-**YAML — hardest, and the guarantee suffers.** Beyond the completeness problem
-above, anchors and aliases (`&a` / `*a`) mean a value can reference another, so
-path-addressing meets a graph rather than a tree, and multi-document streams
-(`---`) need the JSONL sequencing story first. YAML is also a JSON superset, so
-a shared core is plausible. My read: **defer until something demands it**, and be
-explicit that its `Complete` set is much smaller.
+### Format by format
 
-**TOML and CSV — cheap, low demand.** Both are line-oriented with tractable
+**SSE framing + JSONL — first, and it is not close.** Neither is a data format;
+both are framing around documents jawohl already handles. SSE is *how every LLM
+API actually delivers* the JSON jawohl exists to parse, so today every caller
+strips `data:` lines by hand first. JSONL is a document sequence. No new
+stability analysis, no new grammar, and it lands in every language jedem
+reaches on day one.
+
+**Markdown — high, and previously misjudged.** The most-streamed LLM output
+there is, and incremental rendering is a real and widely-felt problem. The field
+has converged on our own model — `flux-md-core` and `brookmd-core` promise
+"committed blocks never change" with a `Patch` per append and stable block IDs;
+`mdstream` says "committed + pending blocks"; `mdstitch` closes unterminated
+syntax token-by-token, which is `complete_json` for markdown. Take that
+convergence as evidence the four-part decomposition is right, not as a reason to
+stay out: **it exists in two languages, and every other language's developers
+are writing repair logic by hand.** Only three of the four parts apply, since
+prose has nothing to validate. That is a smaller product, delivered far wider.
+
+**XML and tag-structured output.** Well-formedness is strict and closing tags
+explicit, so stability is nearly as good as JSON's: an element completes at its
+close tag, text at the next `<`. Several tool-call conventions are tag-flavoured
+rather than JSON. Validation has no clean analogue — XSD is heavy and nobody
+emits it for model output — so a first version would be parse-and-partial-state
+only, with the constraint layer left off rather than faked.
+
+**YAML — broad demand, hardest technically, weakest guarantee.** Beyond the
+completeness problem above, anchors and aliases (`&a` / `*a`) mean a value can
+reference another, so path-addressing meets a graph rather than a tree, and
+multi-document streams (`---`) need the JSONL sequencing story first. YAML is a
+JSON superset, so a shared core is plausible. Worth doing eventually; be explicit
+that its `Complete` set is much smaller.
+
+**TOML and CSV — cheap, narrower demand.** Both are line-oriented with tractable
 stability rules; CSV's field-ends-at-delimiter rule is *exactly* JSON's number
 rule, and column types give validation something real to check. Neither is a
-common LLM output format. Do them if a data-pipeline consumer appears.
+common model output format.
 
 **HTML — defer.** Error recovery and implied close tags make "complete" a
 judgement call rather than a guarantee, which is the one thing jawohl sells.
-`lol_html` already covers streaming rewriting well.
+`lol_html` covers streaming rewriting well already.
 
 ### Recommended order
 
-1. **SSE + JSONL framing** — near-free, and it is how LLM JSON actually arrives.
+1. **SSE + JSONL framing** — near-free, universal, and how LLM JSON actually
+   arrives.
 2. **Extract the format-independent core**, before a second grammar exists.
-3. **XML / tag-structured** — the first genuinely different grammar.
-4. Reassess. **YAML** only on demand; **Markdown deliberately declined** — see
-   above, the field arrived at our model first and the half we would add does
-   not exist there.
+3. **Markdown** — the largest underserved audience, and three of the four
+   contract parts apply.
+4. **XML / tag-structured** — the first genuinely different grammar with
+   prompt stability.
+5. Reassess. **YAML** when someone asks; **TOML/CSV** if a data-pipeline
+   consumer appears; **HTML** deferred.
+
+Throughout: a format is only as valuable as the number of languages it reaches,
+so jedem's backend coverage gates this list more than any parser work does.
 
 ### What would make this a mistake
 
 Shipping a second format before extracting the core, so JSON's assumptions
-harden into the shared layer. Or presenting one stability guarantee across
-formats when the table above says it differs — that would trade the single
-property jawohl is trusted for against breadth nobody asked for.
+harden into the shared layer. Presenting one stability guarantee across formats
+when the table above says it differs. Or shipping formats Rust-only — which
+would be doing the work and declining the reason for it.
