@@ -572,6 +572,51 @@ flips. That is exactly jawohl 1.0's failure — a parser built for complete
 documents misclassifying a prefix — and exactly what a real state machine
 avoids.
 
+### Is there a JSON Schema for each?
+
+Yes for almost all of them, and the answer is usually *JSON Schema itself*.
+
+| format | schema language in practice | reuses jawohl's constraint IR? |
+|---|---|---|
+| YAML | **JSON Schema.** What Kubernetes, GitHub Actions, OpenAPI and docker-compose all actually validate with | **directly** |
+| TOML | **JSON Schema.** `taplo` validates against Draft 4 via a `#:schema` comment; `tombi` likewise | **directly** |
+| CSV | **Table Schema** (Frictionless) and CSVW — JSON documents describing field types, patterns and constraints | mostly; needs a tabular mapping |
+| Markdown | none for prose — but **frontmatter is YAML or TOML**, so the frontmatter validates with JSON Schema | at the frontmatter only |
+| XML | **its own mature stack**: XSD, RELAX NG, Schematron, DTD | no — but see below |
+| HTML | RELAX NG plus custom rules (how validator.nu works); not consumer-facing | no |
+| SSE / JSONL | n/a — framing; the payload's own schema applies | inherited |
+
+Two consequences, and the second corrects this document.
+
+**Most of these formats validate with JSON Schema, so C3 and C4 transfer nearly
+unchanged.** YAML, TOML and CSV all map onto a JSON-ish data model, which is
+exactly why the ecosystem reached for JSON Schema rather than inventing
+something. The constraint IR, the monotonicity classification, the evaluator and
+`NumberProfile` are all reusable; what changes is the parser feeding them. The
+fourth part of the contract is therefore available in far more places than an
+earlier draft of this section assumed.
+
+**XML is not the poor relation here — it is the best-suited format of all, and
+this document previously said the opposite.** XSD's Unique Particle Attribution
+rule requires every content model to be *deterministic*: an element must match
+exactly one particle without lookahead. It exists, in the W3C's own words, so
+that content "can be validated without looking ahead more than one tag, which
+allows simple, streaming implementations." That is a schema language whose
+central constraint was designed for precisely what jawohl does.
+
+Concretely: an XSD content model like `(a, b+, c?)` is a regular expression over
+child elements, and UPA guarantees it compiles to a DFA with no ambiguity. Asking
+"can this sequence of children still be completed validly?" is then **exactly the
+dead-state question** jawohl already answers for `pattern` (§C3) — and unlike
+`pattern`, it needs no anchoring caveat, because a content model is anchored by
+construction. Prefix validation over XML is on *better* theoretical footing than
+over JSON, where numeric bounds forced the `NumberProfile` compromise.
+
+The catch is demand, not capability: XSD is heavy, and nobody makes a language
+model emit one. Its value would be validating model output against a schema the
+*consumer* already has — which is a real situation in enterprise integration, and
+not the LLM-native one.
+
 ### Format by format
 
 **SSE framing + JSONL — first, and it is not close.** Neither is a data format;
@@ -581,8 +626,8 @@ strips `data:` lines by hand first. JSONL is a document sequence. No new
 stability analysis, no new grammar, and it lands in every language jedem
 reaches on day one.
 
-**Markdown — high, and previously misjudged.** The most-streamed LLM output
-there is, and incremental rendering is a real and widely-felt problem. The field
+**Markdown — high, and previously misjudged twice.** The most-streamed LLM
+output there is, and incremental rendering is a real and widely-felt problem. The field
 has converged on our own model — `flux-md-core` and `brookmd-core` promise
 "committed blocks never change" with a `Patch` per append and stable block IDs;
 `mdstream` says "committed + pending blocks"; `mdstitch` closes unterminated
@@ -590,26 +635,34 @@ syntax token-by-token, which is `complete_json` for markdown. Take that
 convergence as evidence the four-part decomposition is right, not as a reason to
 stay out: **it exists in two languages, and every other language's developers
 are writing repair logic by hand.** Only three of the four parts apply, since
-prose has nothing to validate. That is a smaller product, delivered far wider.
+prose has nothing to validate — though **frontmatter does**, and validating a
+document's YAML or TOML frontmatter with JSON Schema while the body streams is a
+real static-site and CMS use case that falls out for free. A smaller product,
+delivered far wider.
 
-**XML and tag-structured output.** Well-formedness is strict and closing tags
-explicit, so stability is nearly as good as JSON's: an element completes at its
-close tag, text at the next `<`. Several tool-call conventions are tag-flavoured
-rather than JSON. Validation has no clean analogue — XSD is heavy and nobody
-emits it for model output — so a first version would be parse-and-partial-state
-only, with the constraint layer left off rather than faked.
+**XML and tag-structured output — the technically richest, if demand appears.**
+Well-formedness is strict and closing tags explicit, so stability is nearly as
+good as JSON's: an element completes at its close tag, text at the next `<`.
+Several tool-call conventions are tag-flavoured rather than JSON. And, contrary
+to what this section said before checking, **all four contract parts apply, with
+the validation half on better footing than JSON's** — see UPA above. The limit is
+demand rather than capability: XSD is heavy and no model emits one, so its use
+would be validating output against a schema the consumer already owns.
 
-**YAML — broad demand, hardest technically, weakest guarantee.** Beyond the
-completeness problem above, anchors and aliases (`&a` / `*a`) mean a value can
+**YAML — validation comes free, stability does not.** Its schema story *is*
+JSON Schema, so C3 and C4 transfer with no new constraint work at all; the entire
+difficulty is the parser and the guarantee. Beyond the completeness problem above,
+anchors and aliases (`&a` / `*a`) mean a value can
 reference another, so path-addressing meets a graph rather than a tree, and
 multi-document streams (`---`) need the JSONL sequencing story first. YAML is a
 JSON superset, so a shared core is plausible. Worth doing eventually; be explicit
 that its `Complete` set is much smaller.
 
-**TOML and CSV — cheap, narrower demand.** Both are line-oriented with tractable
-stability rules; CSV's field-ends-at-delimiter rule is *exactly* JSON's number
-rule, and column types give validation something real to check. Neither is a
-common model output format.
+**TOML and CSV — cheap, and validation is free.** Both are line-oriented with
+tractable stability rules; CSV's field-ends-at-delimiter rule is *exactly* JSON's
+number rule. TOML validates with JSON Schema (`taplo`, `tombi`) and CSV with
+Table Schema, so both reuse the constraint layer directly. Neither is a common
+model output format, which is the only reason they rank low.
 
 **HTML — defer.** Error recovery and implied close tags make "complete" a
 judgement call rather than a guarantee, which is the one thing jawohl sells.
@@ -622,10 +675,17 @@ judgement call rather than a guarantee, which is the one thing jawohl sells.
 2. **Extract the format-independent core**, before a second grammar exists.
 3. **Markdown** — the largest underserved audience, and three of the four
    contract parts apply.
-4. **XML / tag-structured** — the first genuinely different grammar with
-   prompt stability.
-5. Reassess. **YAML** when someone asks; **TOML/CSV** if a data-pipeline
-   consumer appears; **HTML** deferred.
+4. **XML / tag-structured** — the first genuinely different grammar with prompt
+   stability, and the only one where all four contract parts apply with the
+   validation half on better footing than JSON's.
+5. Reassess. **YAML** when someone asks — its validation is free, its guarantee
+   is weak. **TOML/CSV** if a data-pipeline consumer appears; both reuse the
+   constraint layer directly. **HTML** deferred.
+
+Note how little of this is new validation work: YAML, TOML and CSV all validate
+with JSON Schema or a JSON-shaped equivalent, so C3 and C4 carry over and the
+parser is the only thing being built. XML is the exception, and its schema stack
+is *better* suited to prefix validation than JSON's, not worse.
 
 Throughout: a format is only as valuable as the number of languages it reaches,
 so jedem's backend coverage gates this list more than any parser work does.
