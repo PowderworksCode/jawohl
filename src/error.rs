@@ -44,6 +44,9 @@ pub enum ParseErrorKind {
     BadLiteral,
     /// Containers nested deeper than the configured limit.
     DepthLimitExceeded { limit: usize },
+    /// The input ended before the document did, where a complete document was
+    /// required.
+    UnexpectedEndOfInput,
 }
 
 impl fmt::Display for ParseError {
@@ -75,6 +78,7 @@ impl fmt::Display for ParseError {
             DepthLimitExceeded { limit } => {
                 write!(f, "nesting deeper than the limit of {limit}")
             }
+            UnexpectedEndOfInput => write!(f, "input ended before the document was complete"),
         }
     }
 }
