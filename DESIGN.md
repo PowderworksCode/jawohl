@@ -536,13 +536,48 @@ no clean analogue (XSD is heavy and nobody emits it for LLM output), so the
 first version would be parse-and-partial-state only, with the constraint layer
 left off rather than faked.
 
-**Markdown — high demand, different product.** The most-streamed LLM output
-there is, and incremental rendering is a real, widely-felt problem: knowing a
-code fence has closed or a table row is final. But there is nothing to validate,
-so only two of the four contract parts apply. Worth doing, worth *not* pretending
-it is the same product. Note `codewandler-markdown-stream` already does chunk-safe
-incremental CommonMark; the question is whether jawohl adds the stability and
-path model on top or leaves it alone.
+**Markdown — high demand, and the one I would now decline.** Revised after
+surveying the field, which turns out to be crowded and to have arrived at
+jawohl's own model without us.
+
+`flux-md-core` and `brookmd-core` describe themselves as "incremental,
+streaming-aware markdown parser with speculative closure", and their contract is
+ours almost word for word: *committed blocks never change*, each `append` returns
+a `Patch` of what moved, blocks carry stable monotonic IDs. `mdstream` advertises
+"committed + pending blocks". `mdstitch` "closes unterminated syntax
+token-by-token" — which is `complete_json` for markdown. On the JS side Vercel's
+Streamdown does the same repair via its `remend` preprocessor, and semidown,
+solid-streaming-markdown and llmrender all occupy the same ground.
+
+That convergence is worth taking as **evidence the four-part contract is the
+right decomposition** — several teams reached it independently. It is also the
+reason not to enter: the two parts jawohl would bring are already there, and the
+part that makes jawohl distinct — prefix *validation* — has no analogue, because
+there is nothing to validate in prose. We would arrive late with no
+differentiator.
+
+Two transferable findings from that survey, both of which apply to formats we
+*do* take:
+
+- **Repair has a priority order, and it is empirical, not structural.** The
+  field converges on: unclosed code fences first (most visually jarring), then
+  bold/italic markers, inline code, links, math. Worth remembering when
+  `complete_json`'s behaviour is ever tuned — some repairs matter far more to a
+  reader than others.
+- **Repair must be context-aware, and the failure is subtle.** A `**` inside a
+  fenced code block is Python exponentiation, not emphasis; closing it corrupts
+  the code. This is the same class as jawohl's escape-state tracking, where a
+  trailing `\` must not be treated as closing a string — and evidence that the
+  rule generalises past JSON.
+
+One architectural note in our favour, if the decision is ever revisited. Most of
+the JS field does **repair-then-reparse-the-whole-string** rather than true
+incremental parsing, which is quadratic over a stream and causes a documented
+class of bug: `marked`'s lexer only emits a code token once the closing fence
+arrives, so an unclosed fence is classified as a *paragraph* and renders as prose
+until it suddenly flips. That is precisely jawohl 1.0's failure — a parser built
+for complete documents misclassifying a prefix — and precisely what a real state
+machine avoids. Better architecture in a market that has not asked for it.
 
 **YAML — hardest, and the guarantee suffers.** Beyond the completeness problem
 above, anchors and aliases (`&a` / `*a`) mean a value can reference another, so
@@ -565,7 +600,9 @@ judgement call rather than a guarantee, which is the one thing jawohl sells.
 1. **SSE + JSONL framing** — near-free, and it is how LLM JSON actually arrives.
 2. **Extract the format-independent core**, before a second grammar exists.
 3. **XML / tag-structured** — the first genuinely different grammar.
-4. Reassess. Markdown if incremental rendering is the goal; YAML only on demand.
+4. Reassess. **YAML** only on demand; **Markdown deliberately declined** — see
+   above, the field arrived at our model first and the half we would add does
+   not exist there.
 
 ### What would make this a mistake
 
