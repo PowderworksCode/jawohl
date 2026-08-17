@@ -45,11 +45,14 @@ mod error;
 mod event;
 mod parser;
 pub mod schema;
+mod validate;
 mod value;
 
 pub use error::{ParseError, ParseErrorKind};
 pub use event::{Event, ValueKind};
 pub use parser::DEFAULT_MAX_DEPTH;
+pub use schema::{compile as compile_schema, LoweringReport, Schema, SchemaError};
+pub use validate::{NumberProfile, Validation};
 pub use value::{Number, Syntax, Value};
 
 use parser::Parser;
@@ -64,6 +67,12 @@ use parser::Parser;
 /// at once.
 pub struct Stream {
     parser: Parser,
+    /// Attached by [`Stream::from_json_schema`]. Without one, jawohl parses
+    /// and reports structure but judges nothing.
+    validator: Option<validate::Validator>,
+    /// Last state emitted per path, so a transition is reported once rather
+    /// than on every push.
+    reported: std::collections::BTreeMap<String, Validation>,
 }
 
 impl Default for Stream {
@@ -76,7 +85,102 @@ impl Stream {
     pub fn new() -> Self {
         Stream {
             parser: Parser::new(),
+            validator: None,
+            reported: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// A stream that validates against a JSON Schema as it parses.
+    ///
+    /// Uses [`NumberProfile::PlainDecimal`], which is what makes numeric
+    /// bounds decidable on a partial value — see
+    /// [`with_number_profile`](Stream::with_number_profile) for the trade.
+    ///
+    /// ```
+    /// # use jawohl::{Stream, Validation};
+    /// let mut s = Stream::from_json_schema(r#"{"properties":{"role":{"enum":["user","admin"]}}}"#).unwrap();
+    /// s.push(br#"{"role":"sup"#).unwrap();
+    /// // No member begins "sup", and none ever will.
+    /// assert_eq!(s.validation("/role"), Validation::IrrecoverablyInvalid);
+    /// assert!(s.is_irrecoverable());
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// If the schema is not valid JSON, is not a schema, or contains a `$ref`
+    /// that does not resolve. Keywords that merely cannot be *lowered* are not
+    /// errors — they are recorded in [`lowering_report`](Stream::lowering_report).
+    pub fn from_json_schema(schema: &str) -> Result<Self, SchemaError> {
+        let compiled = schema::compile(schema)?;
+        let mut s = Stream::new();
+        s.validator = Some(validate::Validator::new(compiled, NumberProfile::default()));
+        s.parser.set_enforce_plain_decimal(true);
+        Ok(s)
+    }
+
+    /// Choose how numeric prefixes are read.
+    ///
+    /// [`NumberProfile::PlainDecimal`] (the default) lets `"limit": 1000` be
+    /// rejected against `maximum: 100` before the number is delimited, and
+    /// fails the stream if an exponent ever appears. [`NumberProfile::Exact`]
+    /// accepts every JSON number and gives up early numeric rejection, because
+    /// `1000` may still become `1000e-9`.
+    ///
+    /// No effect without a schema: with nothing to judge there is nothing to
+    /// be unsound about, and `1e10` is simply a number.
+    pub fn with_number_profile(mut self, profile: NumberProfile) -> Self {
+        if let Some(v) = self.validator.take() {
+            self.validator = Some(validate::Validator::new(v.schema().clone(), profile));
+            self.parser
+                .set_enforce_plain_decimal(profile == NumberProfile::PlainDecimal);
+        }
+        self
+    }
+
+    /// What the schema compiler could and could not lower. `None` without a
+    /// schema.
+    ///
+    /// Worth checking: a schema that compiled with unsupported keywords is
+    /// validating less than its author wrote.
+    pub fn lowering_report(&self) -> Option<&LoweringReport> {
+        self.validator
+            .as_ref()
+            .map(|v| v.schema().lowering_report())
+    }
+
+    /// How the value at `pointer` stands against the schema.
+    ///
+    /// [`Validation::Pending`] without a schema, or where the schema says
+    /// nothing about that path.
+    pub fn validation(&self, pointer: &str) -> Validation {
+        let Some(v) = &self.validator else {
+            return Validation::Pending;
+        };
+        let Some(tokens) = parse_pointer(pointer) else {
+            return Validation::Pending;
+        };
+        let Some(node) = v.node_for(&tokens) else {
+            return Validation::Pending;
+        };
+        let Some(snap) = self.parser.snapshot() else {
+            return Validation::Pending;
+        };
+        let mut cur = &snap;
+        for tok in &tokens {
+            match cur.child(tok) {
+                Some(next) => cur = next,
+                None => return Validation::Pending,
+            }
+        }
+        v.judge(node, cur, self.status(pointer) == Syntax::Complete)
+    }
+
+    /// True when the document can no longer become valid, whatever arrives.
+    ///
+    /// The early-cancellation signal: a caller seeing this can stop the
+    /// generation producing the input rather than paying for the rest of it.
+    pub fn is_irrecoverable(&self) -> bool {
+        self.validation("").is_irrecoverable()
     }
 
     /// Set the maximum container nesting depth. The default is
@@ -104,7 +208,64 @@ impl Stream {
     /// document. Running out of input mid-value is not an error — it is the
     /// normal state of a stream. Once a stream has failed it stays failed.
     pub fn push(&mut self, chunk: &[u8]) -> Result<(), ParseError> {
-        self.parser.feed(chunk)
+        self.parser.feed(chunk)?;
+        self.judge_touched_paths();
+        Ok(())
+    }
+
+    /// Re-judge the paths this push touched, and their ancestors, emitting a
+    /// validation event on each transition.
+    ///
+    /// Validation events mirror parse events rather than being diffed out of
+    /// whole snapshots: work is proportional to what actually changed, and a
+    /// path whose state has not moved produces no event.
+    fn judge_touched_paths(&mut self) {
+        if self.validator.is_none() {
+            return;
+        }
+        let touched: Vec<String> = self
+            .parser
+            .peek_events()
+            .iter()
+            .filter_map(|e| e.path().map(str::to_string))
+            .collect();
+
+        let mut seen: Vec<String> = Vec::new();
+        for path in touched {
+            // A child's verdict can move its parent's, so walk up to the root.
+            let mut p = path.as_str();
+            loop {
+                if !seen.iter().any(|s| s == p) {
+                    seen.push(p.to_string());
+                }
+                match p.rfind('/') {
+                    Some(0) | None => break,
+                    Some(i) => p = &p[..i],
+                }
+            }
+            if !seen.iter().any(|s| s.is_empty()) {
+                seen.push(String::new());
+            }
+        }
+
+        for path in seen {
+            let now = self.validation(&path);
+            let before = self.reported.get(&path).copied();
+            if before == Some(now) {
+                continue;
+            }
+            self.reported.insert(path.clone(), now);
+            let complete = self.status(&path) == Syntax::Complete;
+            if now.is_failure() {
+                self.parser.push_event(Event::ValidationFailed {
+                    path: path.clone(),
+                    state: now,
+                });
+            } else if complete && now == Validation::Valid {
+                self.parser
+                    .push_event(Event::ValidationCompleted { path, state: now });
+            }
+        }
     }
 
     /// The document as it currently stands, including any value still in

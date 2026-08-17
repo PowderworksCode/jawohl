@@ -146,6 +146,10 @@ pub(crate) struct Parser {
     /// except the innermost. Maintained incrementally — recomputing it per
     /// event made deep documents quadratic.
     path_prefix: String,
+    /// Enforce plain-decimal numbers, because a validator is relying on the
+    /// assumption. Only set when a schema is attached: without one there is no
+    /// verdict to be unsound about, and `1e10` is simply a number.
+    enforce_plain_decimal: bool,
     /// Refuse to nest deeper than this. Real documents are a handful of levels
     /// deep; unbounded nesting is a denial-of-service vector when the input is
     /// untrusted model output, and any design that allocates per level needs a
@@ -172,10 +176,22 @@ impl Parser {
             offset: 0,
             events: Vec::new(),
             path_prefix: String::new(),
+            enforce_plain_decimal: false,
             max_depth: DEFAULT_MAX_DEPTH,
             reported_prefix: 0,
             commit: 0,
         }
+    }
+
+    /// Look at the events buffered since the last drain, without consuming
+    /// them — the validator needs to know which paths moved.
+    pub(crate) fn peek_events(&self) -> &[Event] {
+        &self.events
+    }
+
+    /// Append an event produced outside the parser (a validation verdict).
+    pub(crate) fn push_event(&mut self, e: Event) {
+        self.events.push(e);
     }
 
     /// Take everything emitted since the last drain.
@@ -214,6 +230,10 @@ impl Parser {
         }
         self.stack.push(make(saved));
         Ok(())
+    }
+
+    pub(crate) fn set_enforce_plain_decimal(&mut self, on: bool) {
+        self.enforce_plain_decimal = on;
     }
 
     pub(crate) fn set_max_depth(&mut self, depth: usize) {
@@ -613,11 +633,11 @@ impl Parser {
     /// delimited it (in which case the number is closed and the caller
     /// re-dispatches the byte structurally).
     fn step_number(&mut self, b: u8) -> Result<bool, ParseError> {
-        let (text, state) = match &mut self.tok {
-            Tok::Num { text, state } => (text, state),
+        let state = match &self.tok {
+            Tok::Num { state, .. } => *state,
             _ => unreachable!(),
         };
-        let next = match (*state, b) {
+        let next = match (state, b) {
             (NumState::AfterSign, b'0') => Some(NumState::Zero),
             (NumState::AfterSign, b'1'..=b'9') => Some(NumState::Int),
             (NumState::Zero, b'.') => Some(NumState::Dot),
@@ -635,6 +655,13 @@ impl Parser {
             _ => None,
         };
         if let Some(n) = next {
+            if self.enforce_plain_decimal && matches!(b, b'e' | b'E') {
+                return self.err(ParseErrorKind::NumberProfileViolated);
+            }
+            // Re-borrow: the profile check above needed `&mut self`.
+            let Tok::Num { text, state } = &mut self.tok else {
+                unreachable!("a number token is in flight")
+            };
             text.push(b as char);
             *state = n;
             return Ok(true);

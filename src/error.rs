@@ -47,6 +47,16 @@ pub enum ParseErrorKind {
     /// The input ended before the document did, where a complete document was
     /// required.
     UnexpectedEndOfInput,
+    /// An exponent appeared while validating under
+    /// [`NumberProfile::PlainDecimal`].
+    ///
+    /// The profile is an assumption that makes numeric bounds decidable on a
+    /// prefix. When it turns out false, jawohl says so instead of quietly
+    /// re-widening and letting an earlier verdict stand unexamined -- either
+    /// the guarantee held, or the caller is told it did not.
+    ///
+    /// [`NumberProfile::PlainDecimal`]: crate::NumberProfile::PlainDecimal
+    NumberProfileViolated,
 }
 
 impl fmt::Display for ParseError {
@@ -79,6 +89,13 @@ impl fmt::Display for ParseError {
                 write!(f, "nesting deeper than the limit of {limit}")
             }
             UnexpectedEndOfInput => write!(f, "input ended before the document was complete"),
+            NumberProfileViolated => write!(
+                f,
+                "exponent notation under NumberProfile::PlainDecimal; \
+                 earlier numeric verdicts assumed it would not appear. \
+                 Use NumberProfile::Exact to accept exponents (at the cost of \
+                 no early numeric rejection)"
+            ),
         }
     }
 }

@@ -22,6 +22,7 @@
 //! [`ValueProgressed`]: Event::ValueProgressed
 //! [`ValueCompleted`]: Event::ValueCompleted
 
+use crate::validate::Validation;
 use crate::value::Value;
 
 /// What kind of value just started, known from its first byte.
@@ -59,6 +60,21 @@ pub enum Event {
     /// be malformed.
     ValueCompleted { path: String, value: Value },
 
+    /// A constraint at `path` failed.
+    ///
+    /// A domain outcome, not an exception: the consumer is *supposed* to keep
+    /// receiving events and decide whether to cancel. Only a parser failure --
+    /// malformed input, or a number-profile violation -- terminates a stream.
+    ///
+    /// When `state` is [`Validation::IrrecoverablyInvalid`] no continuation can
+    /// repair it, which is the signal to stop generating.
+    ///
+    /// [`Validation::IrrecoverablyInvalid`]: crate::Validation::IrrecoverablyInvalid
+    ValidationFailed { path: String, state: Validation },
+
+    /// A value at `path` finished and its validation settled.
+    ValidationCompleted { path: String, state: Validation },
+
     /// The root value closed. Emitted exactly once, last.
     DocumentCompleted,
 }
@@ -70,7 +86,9 @@ impl Event {
         match self {
             Event::ValueStarted { path, .. }
             | Event::ValueProgressed { path, .. }
-            | Event::ValueCompleted { path, .. } => Some(path),
+            | Event::ValueCompleted { path, .. }
+            | Event::ValidationFailed { path, .. }
+            | Event::ValidationCompleted { path, .. } => Some(path),
             Event::DocumentCompleted => None,
         }
     }
