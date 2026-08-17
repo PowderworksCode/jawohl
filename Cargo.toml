@@ -17,15 +17,7 @@ readme = "README.md"
 
 [dev-dependencies]
 serde_json = "1.0.96"
-[features]
-default = ["pattern"]
-# `pattern` support, via a DFA that can report when a prefix is already dead.
-# Disabled builds still compile schemas; they record the pattern as unlowered
-# in the report rather than pretending it passed.
-pattern = ["dep:regex-automata"]
-
 [dependencies.regex-automata]
 version = "0.4"
-optional = true
 default-features = false
 features = ["std", "syntax", "dfa-build", "dfa-search", "unicode"]
