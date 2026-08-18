@@ -4,7 +4,7 @@
 // and note the names are camelCase, because that is what a JS caller expects.
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
-const jawohl = require("./.nodeimport/jawohl.node");
+const jawohl = require("./.jedem/jawohl.node");
 
 let fails = 0;
 const check = (label, got, want) => {
@@ -44,14 +44,14 @@ try {
 }
 
 console.log("the stability guarantee, from JS");
-check("string still open",  jawohl.status('{"q":"rust par', "/q"), "incomplete");
-check("string closed",      jawohl.status('{"q":"rust parser"', "/q"), "complete");
-check("number undelimited", jawohl.status('{"n":10', "/n"), "incomplete");
-check("number delimited",   jawohl.status('{"n":10}', "/n"), "complete");
+check("string still open",  jawohl.status('{"q":"rust par', "/q"), "Incomplete");
+check("string closed",      jawohl.status('{"q":"rust parser"', "/q"), "Complete");
+check("number undelimited", jawohl.status('{"n":10', "/n"), "Incomplete");
+check("number delimited",   jawohl.status('{"n":10}', "/n"), "Complete");
 
 console.log("validation as it arrives");
-check("live prefix", jawohl.validate(SCHEMA, '{"role":"us', "/role"), "pending");
-check("dead prefix", jawohl.validate(SCHEMA, '{"role":"sup', "/role"), "irrecoverably_invalid");
+check("live prefix", jawohl.validate(SCHEMA, '{"role":"us', "/role"), "Pending");
+check("dead prefix", jawohl.validate(SCHEMA, '{"role":"sup', "/role"), "IrrecoverablyInvalid");
 
 console.log("the function worth crossing a language boundary for");
 check("cancel: bad enum",  jawohl.isIrrecoverable(SCHEMA, '{"role":"sup'), true);
@@ -59,8 +59,8 @@ check("cancel: bad bound", jawohl.isIrrecoverable(SCHEMA, '{"role":"user","limit
 check("keep going",        jawohl.isIrrecoverable(SCHEMA, '{"role":"user","limit":5'), false);
 
 console.log("Option<T> arrives as null");
-check("not settled yet", jawohl.settledValue('{"q":"rust par', "/q"), null);
-check("settled",         jawohl.settledValue('{"q":"ok"', "/q"), '{"q":"ok"}');
+check("not settled yet", jawohl.settled('{"q":"rust par', "/q"), null);
+check("settled",         jawohl.settled('{"q":"ok"', "/q"), '{"q":"ok"}');
 
 console.log("a synchronous function stays synchronous");
 check("no promise", jawohl.completeJson('{"a":1') instanceof Promise, false);

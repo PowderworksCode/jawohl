@@ -1,0 +1,7 @@
+# Nothing special — this file exists to document a rule that is otherwise
+# invisible: run `cargo fmt -p jawohl_surface`, never `cargo fmt --all`.
+#
+# `python/` and `node/` are generated. rustfmt rewraps method chains that exceed
+# its chain_width, which jedem cannot predict, so formatting generated code makes
+# it differ from what a regeneration produces and the drift guard fails. Generated
+# code is not formatted; it is regenerated.

@@ -38,17 +38,26 @@ try:
 except ValueError as e:
     check("raises", "trailing" in str(e), True)
 
+print("statuses are a real enum, not a magic string")
+check("is a Syntax", type(jawohl.status('{"a":1}', "/a")).__name__, "Syntax")
+check("is a Validation", type(jawohl.validate(SCHEMA, '{"role":"user"}', "")).__name__, "Validation")
+try:
+    jawohl.status('{"a":1}', "/a") == "Complete"
+    check("an enum is not its name", jawohl.status('{"a":1}', "/a") == "Complete", False)
+except TypeError:
+    print("  ok   an enum does not compare equal to a string")
+
 print("the stability guarantee, from Python")
-check("string still open",   jawohl.status(r'{"q":"rust par', "/q"), "incomplete")
-check("string closed",       jawohl.status(r'{"q":"rust parser"', "/q"), "complete")
-check("number undelimited",  jawohl.status(r'{"n":10', "/n"), "incomplete")
-check("number delimited",    jawohl.status(r'{"n":10}', "/n"), "complete")
-check("absent",              jawohl.status(r'{"q":"x"', "/nope"), "missing")
+check("string still open",   jawohl.status(r'{"q":"rust par', "/q"), jawohl.Syntax.Incomplete)
+check("string closed",       jawohl.status(r'{"q":"rust parser"', "/q"), jawohl.Syntax.Complete)
+check("number undelimited",  jawohl.status(r'{"n":10', "/n"), jawohl.Syntax.Incomplete)
+check("number delimited",    jawohl.status(r'{"n":10}', "/n"), jawohl.Syntax.Complete)
+check("absent",              jawohl.status(r'{"q":"x"', "/nope"), jawohl.Syntax.Missing)
 
 print("validation as it arrives")
-check("live prefix",   jawohl.validate(SCHEMA, r'{"role":"us', "/role"), "pending")
-check("dead prefix",   jawohl.validate(SCHEMA, r'{"role":"sup', "/role"), "irrecoverably_invalid")
-check("valid",         jawohl.validate(SCHEMA, r'{"role":"admin"}', ""), "valid")
+check("live prefix",   jawohl.validate(SCHEMA, r'{"role":"us', "/role"), jawohl.Validation.Pending)
+check("dead prefix",   jawohl.validate(SCHEMA, r'{"role":"sup', "/role"), jawohl.Validation.IrrecoverablyInvalid)
+check("valid",         jawohl.validate(SCHEMA, r'{"role":"admin"}', ""), jawohl.Validation.Valid)
 
 print("the function worth crossing a language boundary for")
 check("cancel: bad enum",  jawohl.is_irrecoverable(SCHEMA, r'{"role":"sup'), True)
@@ -56,8 +65,8 @@ check("cancel: bad bound", jawohl.is_irrecoverable(SCHEMA, r'{"role":"user","lim
 check("keep going",        jawohl.is_irrecoverable(SCHEMA, r'{"role":"user","limit":5'), False)
 
 print("Option<T> arrives as None, not a sentinel")
-check("not settled yet", jawohl.settled_value(r'{"q":"rust par', "/q"), None)
-check("settled",         jawohl.settled_value(r'{"q":"ok"', "/q"), '{"q":"ok"}')
+check("not settled yet", jawohl.settled(r'{"q":"rust par', "/q"), None)
+check("settled",         jawohl.settled(r'{"q":"ok"', "/q"), '{"q":"ok"}')
 
 print("constraints jawohl could not lower are reported")
 check("report mentions if", "if" in jawohl.lowering_report('{"type":"string","if":{}}'), True)

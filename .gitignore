@@ -2,6 +2,6 @@
 .env
 
 **/.env
-**/targetbindings/.pyimport/
-bindings/.nodeimport/
+**/targetbindings/target/
+bindings/.jedem/
 bindings/target/

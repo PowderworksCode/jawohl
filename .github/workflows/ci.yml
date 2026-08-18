@@ -65,11 +65,14 @@ jobs:
         with: { python-version: "3.12" }
       - uses: actions/setup-node@v4
         with: { node-version: "22" }
+      - run: cargo install --git https://github.com/PowderworksCode/jedem cargo-jedem
       # Fails if the committed bindings no longer match the surface.
-      - run: cargo test -p jawohl-surface
+      - run: cargo test -p jawohl_surface
         working-directory: bindings
-      - run: ./bindings/run-python.sh
-      - run: ./bindings/run-node.sh
+      - run: cargo jedem run --python test.py
+        working-directory: bindings
+      - run: cargo jedem run --node test.mjs
+        working-directory: bindings
 
   packaging:
     runs-on: ubuntu-latest

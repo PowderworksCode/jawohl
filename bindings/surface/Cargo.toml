@@ -1,5 +1,9 @@
 [package]
-name = "jawohl-surface"
+# Underscored deliberately: jedem keys the generated manifests' dependency on
+# the Rust crate name, so a package name containing a hyphen would generate a
+# manifest cargo cannot resolve. Keeping the two spellings identical sidesteps
+# it. (jedem rough edge, worth fixing there.)
+name = "jawohl_surface"
 description = "The plain-value surface of jawohl, annotated for jedem."
 version.workspace = true
 edition.workspace = true

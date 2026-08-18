@@ -1,0 +1,4 @@
+# Files jedem writes. Collapsed in review by default; regenerate rather than
+# editing. Every one also carries an `@generated` marker in its own header.
+bindings/python/** linguist-generated=true
+bindings/node/**   linguist-generated=true
