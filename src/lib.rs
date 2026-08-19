@@ -41,6 +41,15 @@
 //! assert_eq!(s.status("/limit"), Syntax::Incomplete); // 10 could still become 100
 //! ```
 
+/// The README, compiled and run as doctests.
+///
+/// The 0.1 README promised wrappers that never shipped and documented behaviour
+/// the code did not have. Every Rust snippet in it is now checked by
+/// `cargo test`, so it cannot drift from the crate again.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct Readme;
+
 mod error;
 mod event;
 mod parser;
