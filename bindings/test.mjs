@@ -1,7 +1,10 @@
 // jawohl from Node, through jedem-generated bindings.
 //
-// Same Rust surface as the Python test. Nobody wrote this binding either --
+// Same Rust annotations as the Python test. Nobody wrote this binding either --
 // and note the names are camelCase, because that is what a JS caller expects.
+//
+// `Stream` is a handle, so this is the real incremental parser: one object, fed
+// chunk by chunk, keeping its state across calls.
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const jawohl = require("./.jedem/jawohl.node");
@@ -15,6 +18,7 @@ const check = (label, got, want) => {
     console.log(`  ok   ${label}: ${JSON.stringify(got)}`);
   }
 };
+const bytes = (s) => new Uint8Array(Buffer.from(s, "utf8"));
 
 const SCHEMA = JSON.stringify({
   type: "object",
@@ -25,45 +29,82 @@ const SCHEMA = JSON.stringify({
   },
 });
 
-console.log("names are camelCase, from the same snake_case Rust");
-check("completeJson exists", typeof jawohl.completeJson, "function");
-check("complete_json does not", jawohl.complete_json, undefined);
-check("isIrrecoverable exists", typeof jawohl.isIrrecoverable, "function");
-
-console.log("completion");
+console.log("completion -- the promise jawohl made in 2023");
 check("completeJson", jawohl.completeJson('{"query":"rust par'), '{"query":"rust par"}');
 check("finishes a literal", jawohl.completeJson('{"a": tru'), '{"a": true}');
 check("drops a dangling escape", jawohl.completeJson('{"a": "x\\'), '{"a": "x"}');
+check("keeps a complete escape", jawohl.completeJson('{"a": "x\\\\'), '{"a": "x\\\\"}');
+check("closing suffix only", jawohl.getClosingStringForPartialJson('{"a":1'), "}");
 
-console.log("malformed input throws");
+console.log("malformed input throws, it does not return garbage");
 try {
   jawohl.completeJson('{"a": 1}}');
   console.log("  FAIL should have thrown"); fails++;
 } catch (e) {
-  check("throws", e.message.includes("trailing"), true);
+  check("throws", /trailing/.test(String(e)), true);
 }
 
-console.log("the stability guarantee, from JS");
-check("string still open",  jawohl.status('{"q":"rust par', "/q"), "Incomplete");
-check("string closed",      jawohl.status('{"q":"rust parser"', "/q"), "Complete");
-check("number undelimited", jawohl.status('{"n":10', "/n"), "Incomplete");
-check("number delimited",   jawohl.status('{"n":10}', "/n"), "Complete");
+console.log("a Stream is a live object, fed one chunk at a time");
+const s = new jawohl.Stream();
+s.push(bytes('{"query":"rust '));
+check("not done yet", s.isDocumentComplete(), false);
+check("string still open", s.status("/query"), jawohl.Syntax.Incomplete);
+s.push(bytes('parser"'));
+// The same object, remembering the first chunk -- that is what a handle buys.
+check("closed by a later chunk", s.status("/query"), jawohl.Syntax.Complete);
+s.push(bytes("}"));
+check("document closed", s.isDocumentComplete(), true);
 
-console.log("validation as it arrives");
-check("live prefix", jawohl.validate(SCHEMA, '{"role":"us', "/role"), "Pending");
-check("dead prefix", jawohl.validate(SCHEMA, '{"role":"sup', "/role"), "IrrecoverablyInvalid");
+console.log("two streams are independent");
+const a = new jawohl.Stream(), b = new jawohl.Stream();
+a.push(bytes('{"n":1}'));
+check("a is complete", a.isDocumentComplete(), true);
+check("b is untouched", b.isDocumentComplete(), false);
 
-console.log("the function worth crossing a language boundary for");
-check("cancel: bad enum",  jawohl.isIrrecoverable(SCHEMA, '{"role":"sup'), true);
-check("cancel: bad bound", jawohl.isIrrecoverable(SCHEMA, '{"role":"user","limit":1000'), true);
-check("keep going",        jawohl.isIrrecoverable(SCHEMA, '{"role":"user","limit":5'), false);
+console.log("the stability guarantee, from JavaScript");
+const statusOf = (text, pointer) => {
+  const st = new jawohl.Stream();
+  st.push(bytes(text));
+  return st.status(pointer);
+};
+check("number undelimited", statusOf('{"n":10', "/n"), jawohl.Syntax.Incomplete);
+check("number delimited",   statusOf('{"n":10}', "/n"), jawohl.Syntax.Complete);
+check("absent",             statusOf('{"q":"x"', "/nope"), jawohl.Syntax.Missing);
 
-console.log("Option<T> arrives as null");
-check("not settled yet", jawohl.settled('{"q":"rust par', "/q"), null);
-check("settled",         jawohl.settled('{"q":"ok"', "/q"), '{"q":"ok"}');
+console.log("validation, decided as the bytes arrive");
+const v = jawohl.Stream.fromJsonSchema(SCHEMA);
+v.push(bytes('{"role":"us'));
+check("live prefix", v.validation("/role"), jawohl.Validation.Pending);
+check("keep going",  v.isIrrecoverable(), false);
+v.push(bytes('er","limit":5'));
+check("still fine",  v.isIrrecoverable(), false);
+v.push(bytes("0}"));
+check("valid", v.validation(""), jawohl.Validation.Valid);
 
-console.log("a synchronous function stays synchronous");
-check("no promise", jawohl.completeJson('{"a":1') instanceof Promise, false);
+console.log("the answer worth crossing a language boundary for");
+const deadAt = (chunks) => {
+  const st = jawohl.Stream.fromJsonSchema(SCHEMA);
+  for (let i = 0; i < chunks.length; i++) {
+    st.push(bytes(chunks[i]));
+    if (st.isIrrecoverable()) return i;
+  }
+  return null;
+};
+// Cancellation lands on the chunk that decided it, not at end of document.
+check("bad enum, chunk 1", deadAt(['{"role":"', "sup", 'er"}']), 1);
+check("bad bound, chunk 1", deadAt(['{"role":"user","limit":', "1000", "}"]), 1);
+check("good input never dies", deadAt(['{"role":"user","limit":', "50", "}"]), null);
 
-if (fails) { console.log(`\n${fails} failure(s)`); process.exit(1); }
+console.log("a bad schema throws rather than silently validating nothing");
+try {
+  jawohl.Stream.fromJsonSchema("{ not json");
+  console.log("  FAIL should have thrown"); fails++;
+} catch {
+  console.log("  ok   bad schema throws");
+}
+
+if (fails) {
+  console.log(`\n${fails} failure(s)`);
+  process.exit(1);
+}
 console.log("\nall checks passed");

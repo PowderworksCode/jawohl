@@ -5,7 +5,7 @@
 /// Orthogonal to validation state (see `Validation`, added in the validation
 /// layer). `Missing` is distinct from `Incomplete`: a key that has not appeared
 /// at all is missing, whereas one whose value is half-written is incomplete.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(jedem::Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Syntax {
     /// No value at this path (yet).
     Missing,

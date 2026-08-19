@@ -151,6 +151,7 @@ dependencies = [
 name = "jawohl"
 version = "0.2.0"
 dependencies = [
+ "jedem",
  "regex-automata",
 ]
 
@@ -158,7 +159,7 @@ dependencies = [
 name = "jawohl-node"
 version = "0.2.0"
 dependencies = [
- "jawohl_surface",
+ "jawohl",
  "napi",
  "napi-build",
  "napi-derive",
@@ -168,22 +169,14 @@ dependencies = [
 name = "jawohl-python"
 version = "0.2.0"
 dependencies = [
- "jawohl_surface",
- "pyo3",
-]
-
-[[package]]
-name = "jawohl_surface"
-version = "0.2.0"
-dependencies = [
  "jawohl",
- "jedem",
+ "pyo3",
 ]
 
 [[package]]
 name = "jedem"
 version = "0.1.0"
-source = "git+https://github.com/PowderworksCode/jedem#a07d759f49807611c162b7c27d08d9cd2a777bb0"
+source = "git+https://github.com/PowderworksCode/jedem?branch=feat%2Fhandles#d3db30515fb5e6b00b5878ed3504588460c316ed"
 dependencies = [
  "jedem-macros",
 ]
@@ -191,7 +184,7 @@ dependencies = [
 [[package]]
 name = "jedem-macros"
 version = "0.1.0"
-source = "git+https://github.com/PowderworksCode/jedem#a07d759f49807611c162b7c27d08d9cd2a777bb0"
+source = "git+https://github.com/PowderworksCode/jedem?branch=feat%2Fhandles#d3db30515fb5e6b00b5878ed3504588460c316ed"
 dependencies = [
  "proc-macro2",
  "quote",

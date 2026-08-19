@@ -18,7 +18,7 @@ use crate::value::Value;
 /// validator, and [`IrrecoverablyInvalid`](Validation::IrrecoverablyInvalid) is
 /// the one that pays for itself: it means no continuation of the input can make
 /// this value valid, so the caller may stop now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(jedem::Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Validation {
     /// Nothing decided yet — the value is still too incomplete to judge.
     Pending,

@@ -17,44 +17,12 @@ use pyo3::prelude::*;
 fn err(e: impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(e.to_string())
 }
-/// How far along a value is.
-///
-/// A mirror of [`jawohl::Syntax`], because `#[derive(jedem::Enum)]` has to be
-/// applied where the type is defined and jawohl itself takes no dependency on
-/// jedem. The cost is one `From` impl; the gain is that Python receives a real
-/// enum member and TypeScript a string-literal union, rather than a bare string
-/// only convention keeps correct.
-#[pyclass(eq, eq_int)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Syntax {
-    Missing,
-    Incomplete,
-    Complete,
-}
-
-impl From<jawohl_surface::Syntax> for Syntax {
-    fn from(v: jawohl_surface::Syntax) -> Self {
-        match v {
-            jawohl_surface::Syntax::Missing => Self::Missing,
-            jawohl_surface::Syntax::Incomplete => Self::Incomplete,
-            jawohl_surface::Syntax::Complete => Self::Complete,
-        }
-    }
-}
-
-impl From<Syntax> for jawohl_surface::Syntax {
-    fn from(v: Syntax) -> Self {
-        match v {
-            Syntax::Missing => Self::Missing,
-            Syntax::Incomplete => Self::Incomplete,
-            Syntax::Complete => Self::Complete,
-        }
-    }
-}
-
 /// What is known about a value's validity.
 ///
-/// A mirror of [`jawohl::Validation`], for the same reason as [`Syntax`].
+/// The two "so far" states are what make this different from a batch
+/// validator, and [`IrrecoverablyInvalid`](Validation::IrrecoverablyInvalid) is
+/// the one that pays for itself: it means no continuation of the input can make
+/// this value valid, so the caller may stop now.
 #[pyclass(eq, eq_int)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Validation {
@@ -65,19 +33,19 @@ pub enum Validation {
     IrrecoverablyInvalid,
 }
 
-impl From<jawohl_surface::Validation> for Validation {
-    fn from(v: jawohl_surface::Validation) -> Self {
+impl From<jawohl::Validation> for Validation {
+    fn from(v: jawohl::Validation) -> Self {
         match v {
-            jawohl_surface::Validation::Pending => Self::Pending,
-            jawohl_surface::Validation::ValidSoFar => Self::ValidSoFar,
-            jawohl_surface::Validation::Valid => Self::Valid,
-            jawohl_surface::Validation::Invalid => Self::Invalid,
-            jawohl_surface::Validation::IrrecoverablyInvalid => Self::IrrecoverablyInvalid,
+            jawohl::Validation::Pending => Self::Pending,
+            jawohl::Validation::ValidSoFar => Self::ValidSoFar,
+            jawohl::Validation::Valid => Self::Valid,
+            jawohl::Validation::Invalid => Self::Invalid,
+            jawohl::Validation::IrrecoverablyInvalid => Self::IrrecoverablyInvalid,
         }
     }
 }
 
-impl From<Validation> for jawohl_surface::Validation {
+impl From<Validation> for jawohl::Validation {
     fn from(v: Validation) -> Self {
         match v {
             Validation::Pending => Self::Pending,
@@ -89,78 +57,192 @@ impl From<Validation> for jawohl_surface::Validation {
     }
 }
 
-// ---- jawohl_api ----
+/// How far along a value is, syntactically.
+///
+/// Orthogonal to validation state (see `Validation`, added in the validation
+/// layer). `Missing` is distinct from `Incomplete`: a key that has not appeared
+/// at all is missing, whereas one whose value is half-written is incomplete.
+#[pyclass(eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Syntax {
+    Missing,
+    Incomplete,
+    Complete,
+}
+
+impl From<jawohl::Syntax> for Syntax {
+    fn from(v: jawohl::Syntax) -> Self {
+        match v {
+            jawohl::Syntax::Missing => Self::Missing,
+            jawohl::Syntax::Incomplete => Self::Incomplete,
+            jawohl::Syntax::Complete => Self::Complete,
+        }
+    }
+}
+
+impl From<Syntax> for jawohl::Syntax {
+    fn from(v: Syntax) -> Self {
+        match v {
+            Syntax::Missing => Self::Missing,
+            Syntax::Incomplete => Self::Incomplete,
+            Syntax::Complete => Self::Complete,
+        }
+    }
+}
+
+// ---- Stream ----
+
+#[pyclass]
+pub struct Stream {
+    inner: jawohl::Stream,
+}
+
+impl From<jawohl::Stream> for Stream {
+    fn from(inner: jawohl::Stream) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl Stream {
+    #[new]
+    fn new() -> Self {
+        jawohl::Stream::new().into()
+    }
+
+    /// A stream that validates against a JSON Schema as it parses.
+    ///
+    /// Uses [`NumberProfile::PlainDecimal`], which is what makes numeric
+    /// bounds decidable on a partial value — see
+    /// [`with_number_profile`](Stream::with_number_profile) for the trade.
+    ///
+    /// ```
+    /// # use jawohl::{Stream, Validation};
+    /// let mut s = Stream::from_json_schema(r#"{"properties":{"role":{"enum":["user","admin"]}}}"#).unwrap();
+    /// s.push(br#"{"role":"sup"#).unwrap();
+    /// // No member begins "sup", and none ever will.
+    /// assert_eq!(s.validation("/role"), Validation::IrrecoverablyInvalid);
+    /// assert!(s.is_irrecoverable());
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// If the schema is not valid JSON, is not a schema, or contains a `$ref`
+    /// that does not resolve. Keywords that merely cannot be *lowered* are not
+    /// errors — they are recorded in [`lowering_report`](Stream::lowering_report).
+    #[staticmethod]
+    fn from_json_schema(schema: &str) -> PyResult<Self> {
+        Ok(jawohl::Stream::from_json_schema(schema).map_err(err)?.into())
+    }
+
+    /// How the value at `pointer` stands against the schema.
+    ///
+    /// [`Validation::Pending`] without a schema, or where the schema says
+    /// nothing about that path.
+    fn validation(&self, pointer: &str) -> Validation {
+        self.inner.validation(pointer).into()
+    }
+
+    /// True when the document can no longer become valid, whatever arrives.
+    ///
+    /// The early-cancellation signal: a caller seeing this can stop the
+    /// generation producing the input rather than paying for the rest of it.
+    fn is_irrecoverable(&self) -> bool {
+        self.inner.is_irrecoverable()
+    }
+
+    /// Feed the next chunk.
+    ///
+    /// Returns `Err` only if the input cannot be a prefix of any valid JSON
+    /// document. Running out of input mid-value is not an error — it is the
+    /// normal state of a stream. Once a stream has failed it stays failed.
+    fn push(&mut self, chunk: &[u8]) -> PyResult<()> {
+        self.inner.push(chunk).map_err(err)?;
+        Ok(())
+    }
+
+    /// How far along the value at `pointer` is.
+    ///
+    /// `pointer` is an RFC 6901 JSON Pointer: `""` is the root, `/query` a
+    /// member, `/messages/0/role` a nested one.
+    fn status(&self, pointer: &str) -> Syntax {
+        self.inner.status(pointer).into()
+    }
+
+    /// True once the root value has closed.
+    fn is_document_complete(&self) -> bool {
+        self.inner.is_document_complete()
+    }
+
+    /// Signal end of input: completes a trailing number or literal if it is
+    /// well-formed. Containers left open simply stay open.
+    fn finish(&mut self) -> PyResult<()> {
+        self.inner.finish().map_err(err)?;
+        Ok(())
+    }
+}
+
+// ---- complete_json ----
 
 /// Complete a truncated JSON document so that it parses.
 ///
-/// Fails if the input is not a prefix of any valid JSON document.
+/// This is jawohl's original entry point, now built on the incremental parser
+/// and therefore correct on inputs the bracket-counting version silently
+/// corrupted — a dangling `\`, a half-written `\uXXXX`, a partial literal, a
+/// key with no value, a trailing comma.
+///
+/// Anything not yet complete enough to be valid is **dropped**, and anything
+/// unambiguously completable is **finished**: `tru` becomes `true`, an open
+/// string is closed after its stable prefix.
+///
+/// ```
+/// # use jawohl::complete_json;
+/// assert_eq!(
+/// complete_json(r#"{"key":"value","arr":[1,2,{"nested":"v"#).unwrap(),
+/// r#"{"key":"value","arr":[1,2,{"nested":"v"}]}"#
+/// );
+/// // a dangling escape is dropped rather than escaping the closing quote
+/// assert_eq!(complete_json(r#"{"a":"x\"#).unwrap(), r#"{"a":"x"}"#);
+/// // a partial literal is finished
+/// assert_eq!(complete_json(r#"{"a":tru"#).unwrap(), r#"{"a":true}"#);
+/// ```
+///
+/// # Errors
+///
+/// Returns `Err` if the input is not a prefix of any valid JSON document.
+/// Unlike 1.0, which returned `Ok` with invalid output, a malformed input is
+/// reported as such.
+///
+/// # A note on numbers
+///
+/// A trailing undelimited number is emitted as-is (`{"limit":10` completes to
+/// `{"limit":10}`), because that is what a display consumer wants. It is
+/// therefore the one part of the output that a later chunk may change — use
+/// [`Stream::status`] if you need the stability guarantee.
 #[pyfunction]
 pub fn complete_json(input: &str) -> PyResult<String> {
-    jawohl_surface::jawohl_api::complete_json(input).map_err(err)
+    jawohl::complete_json(input).map_err(err)
 }
 
-/// Is this a prefix of some valid JSON document?
-#[pyfunction]
-pub fn is_valid_prefix(input: &str) -> bool {
-    jawohl_surface::jawohl_api::is_valid_prefix(input)
-}
+// ---- get_closing_string_for_partial_json ----
 
-/// Has the document finished?
-#[pyfunction]
-pub fn is_complete(input: &str) -> PyResult<bool> {
-    jawohl_surface::jawohl_api::is_complete(input).map_err(err)
-}
-
-/// How far along the value at `pointer` is.
+/// The closing string 1.0 would have appended — kept for source compatibility.
 ///
-/// [`Syntax::Complete`] carries the stability guarantee: that value will
-/// not change, so it is safe to act on.
+/// Prefer [`complete_json`]: because 2.0 may need to *drop* an incomplete
+/// fragment rather than append to it, a suffix alone cannot always express the
+/// completion. This returns the suffix when one exists, and an empty string
+/// when the completion required dropping something.
 #[pyfunction]
-pub fn status(input: &str, pointer: &str) -> PyResult<Syntax> {
-    jawohl_surface::jawohl_api::status(input, pointer).map(|v| v.into()).map_err(err)
-}
-
-/// The completed document, but only once the value at `pointer` is final.
-/// Absent while it can still change.
-#[pyfunction]
-pub fn settled(input: &str, pointer: &str) -> PyResult<Option<String>> {
-    jawohl_surface::jawohl_api::settled(input, pointer).map_err(err)
-}
-
-/// Validate what has arrived against a JSON Schema.
-#[pyfunction]
-pub fn validate(schema: &str, input: &str, pointer: &str) -> PyResult<Validation> {
-    jawohl_surface::jawohl_api::validate(schema, input, pointer).map(|v| v.into()).map_err(err)
-}
-
-/// **Can this generation still succeed?**
-///
-/// `true` means no continuation of the input can satisfy the schema, so a
-/// caller should stop generating. This is the one function worth crossing a
-/// language boundary for.
-#[pyfunction]
-pub fn is_irrecoverable(schema: &str, input: &str) -> PyResult<bool> {
-    jawohl_surface::jawohl_api::is_irrecoverable(schema, input).map_err(err)
-}
-
-/// Which schema constraints jawohl could not lower, and why. Empty when
-/// everything compiled.
-#[pyfunction]
-pub fn lowering_report(schema: &str) -> PyResult<String> {
-    jawohl_surface::jawohl_api::lowering_report(schema).map_err(err)
+pub fn get_closing_string_for_partial_json(input: &str) -> PyResult<String> {
+    jawohl::get_closing_string_for_partial_json(input).map_err(err)
 }
 
 /// Register everything on the module. Call this from your `#[pymodule]`.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<Syntax>()?;
     m.add_class::<Validation>()?;
+    m.add_class::<Syntax>()?;
+    m.add_class::<Stream>()?;
     m.add_function(wrap_pyfunction!(complete_json, m)?)?;
-    m.add_function(wrap_pyfunction!(is_valid_prefix, m)?)?;
-    m.add_function(wrap_pyfunction!(is_complete, m)?)?;
-    m.add_function(wrap_pyfunction!(status, m)?)?;
-    m.add_function(wrap_pyfunction!(settled, m)?)?;
-    m.add_function(wrap_pyfunction!(validate, m)?)?;
-    m.add_function(wrap_pyfunction!(is_irrecoverable, m)?)?;
-    m.add_function(wrap_pyfunction!(lowering_report, m)?)?;
+    m.add_function(wrap_pyfunction!(get_closing_string_for_partial_json, m)?)?;
     Ok(())
 }
