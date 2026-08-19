@@ -2,7 +2,11 @@
 name = "jawohl"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.70"
+# Raised from 1.70 by the jedem dependency. Its proc-macro chain floors at
+# 1.71, and jedem itself uses `#[diagnostic::on_unimplemented]`, stabilised in
+# 1.78. Declared rather than worked around: `rust-version` is a promise to
+# consumers, and 1.78 is over two years old.
+rust-version = "1.78"
 authors = ["Zack Maril"]
 description = "Incremental parser and validator for streaming JSON — parse and validate LLM output while it is still being generated"
 keywords = ["json", "streaming", "incremental", "llm", "parser"]

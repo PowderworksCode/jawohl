@@ -40,13 +40,12 @@ jobs:
 
   # The declared MSRV has to be real -- for consumers of the library, which is
   # what `rust-version` promises. Dev-dependencies are deliberately not covered:
-  # serde_json's tree currently requires 1.71, and that constrains our test
-  # suite, not anybody depending on jawohl.
+  # they constrain our test suite, not anybody depending on jawohl.
   msrv:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.70.0
+      - uses: dtolnay/rust-toolchain@1.78.0
       # The committed lockfile is v4, which cargo 1.70 cannot parse. Resolving
       # fresh also means this job fails loudly if a dependency raises its own
       # MSRV past ours, which is the signal we want.
