@@ -18,7 +18,7 @@ use crate::value::Value;
 /// validator, and [`IrrecoverablyInvalid`](Validation::IrrecoverablyInvalid) is
 /// the one that pays for itself: it means no continuation of the input can make
 /// this value valid, so the caller may stop now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(jedem::Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Validation {
     /// Nothing decided yet — the value is still too incomplete to judge.
     Pending,
@@ -77,7 +77,7 @@ impl Validation {
 /// number is delimited**, which deletes the feature entirely.
 ///
 /// So the assumption is made explicit, and enforced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(jedem::Enum, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NumberProfile {
     /// Assume plain decimal — no `e`/`E` exponent. A prefix then bounds an
     /// interval (`1000` ⇒ `[1000, 1001)`) and bounds decide early.

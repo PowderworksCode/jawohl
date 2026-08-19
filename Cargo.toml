@@ -2,7 +2,11 @@
 name = "jawohl"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.70"
+# Raised from 1.70 by the jedem dependency. Its proc-macro chain floors at
+# 1.71, and jedem itself uses `#[diagnostic::on_unimplemented]`, stabilised in
+# 1.78. Declared rather than worked around: `rust-version` is a promise to
+# consumers, and 1.78 is over two years old.
+rust-version = "1.78"
 authors = ["Zack Maril"]
 description = "Incremental parser and validator for streaming JSON — parse and validate LLM output while it is still being generated"
 keywords = ["json", "streaming", "incremental", "llm", "parser"]
@@ -15,7 +19,23 @@ readme = "README.md"
 # The conformance corpus is a repo-level gate, not something a consumer of the
 # published crate re-runs -- and shipping the test without its 316-file corpus
 # would mean shipping a test that cannot pass.
-exclude = ["tests/corpus/**", "tests/conformance.rs", "images/**"]
+exclude = ["tests/corpus/**", "tests/conformance.rs", "images/**", "bindings/**"]
+
+# jawohl's own types carry their binding annotations, so jedem is a normal
+# dependency rather than something a side crate applies from outside. What it
+# adds at runtime is nothing: the descriptor is `&'static` data and the
+# generator is reached only from the `#[cfg(test)]` drift guard.
+#
+# `version` alongside `git` is the publishable form -- cargo drops the git
+# source and keeps the version requirement when packaging. It does not help
+# yet: jedem is not on crates.io, so `cargo package` cannot resolve it and
+# jawohl 0.2.0 cannot be published until it is.
+#
+# TODO: drop `branch` once jedem's handle and `bindings:` work is on main.
+[dependencies.jedem]
+version = "0.1"
+git = "https://github.com/PowderworksCode/jedem"
+branch = "feat/handles"
 
 [dependencies.regex-automata]
 version = "0.4"

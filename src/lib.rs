@@ -90,6 +90,7 @@ impl Default for Stream {
     }
 }
 
+#[jedem::export]
 impl Stream {
     pub fn new() -> Self {
         Stream {
@@ -151,6 +152,8 @@ impl Stream {
     ///
     /// Worth checking: a schema that compiled with unsupported keywords is
     /// validating less than its author wrote.
+    // Not across a boundary yet: jedem has no lowering for records.
+    #[jedem(skip)]
     pub fn lowering_report(&self) -> Option<&LoweringReport> {
         self.validator
             .as_ref()
@@ -280,6 +283,8 @@ impl Stream {
     /// The document as it currently stands, including any value still in
     /// flight (as one of the `Partial*` variants). `None` before the first
     /// non-whitespace byte.
+    // Not across a boundary yet: jedem has no lowering for unions.
+    #[jedem(skip)]
     pub fn snapshot(&self) -> Option<Value> {
         self.parser.snapshot()
     }
@@ -322,6 +327,8 @@ impl Stream {
     }
 
     /// The failure that terminated this stream, if any.
+    // Not across a boundary yet: jedem has no lowering for records.
+    #[jedem(skip)]
     pub fn error(&self) -> Option<&ParseError> {
         self.parser.failure()
     }
@@ -341,6 +348,8 @@ impl Stream {
     /// assert!(matches!(events.last(), Some(Event::DocumentCompleted)));
     /// assert!(s.changes().is_empty()); // drained
     /// ```
+    // Not across a boundary yet: jedem has no lowering for unions -- `Event` has struct variants.
+    #[jedem(skip)]
     pub fn changes(&mut self) -> Vec<Event> {
         self.parser.drain_events()
     }
@@ -448,6 +457,7 @@ pub fn parse_complete(input: &str) -> Result<Value, ParseError> {
 /// `{"limit":10}`), because that is what a display consumer wants. It is
 /// therefore the one part of the output that a later chunk may change — use
 /// [`Stream::status`] if you need the stability guarantee.
+#[jedem::export]
 pub fn complete_json(input: &str) -> Result<String, ParseError> {
     let mut s = Stream::new();
     s.push(input.as_bytes())?;
@@ -465,7 +475,31 @@ pub fn complete_json(input: &str) -> Result<String, ParseError> {
 /// fragment rather than append to it, a suffix alone cannot always express the
 /// completion. This returns the suffix when one exists, and an empty string
 /// when the completion required dropping something.
+#[jedem::export]
 pub fn get_closing_string_for_partial_json(input: &str) -> Result<String, ParseError> {
     let completed = complete_json(input)?;
     Ok(completed.strip_prefix(input).unwrap_or("").to_string())
+}
+
+// ---------------------------------------------------------------------------
+
+// jawohl's binding surface.
+//
+// Everything named here is annotated where it is defined — `Stream` and the
+// two free functions above, `Syntax` and `Validation` in their own modules.
+// There is no separate surface crate restating the API, and so nothing that
+// can fall out of step with it.
+//
+// `Stream` crosses as a handle, which means Python and TypeScript get the
+// incremental parser itself rather than a batch-shaped stand-in that
+// re-parses from byte zero on every call.
+//
+// `bindings:` puts generation in the test suite: `cargo test` fails if the
+// committed bindings no longer match this surface, and `JEDEM_WRITE=1 cargo
+// test` rewrites them.
+jedem::surface! {
+    name: "jawohl",
+    version: "0.2.0",
+    api: [Stream, complete_json, get_closing_string_for_partial_json],
+    bindings: "bindings",
 }

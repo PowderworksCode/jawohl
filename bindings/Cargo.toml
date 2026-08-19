@@ -1,0 +1,13 @@
+# A separate workspace on purpose. The binding crates pull in pyo3 and napi,
+# and building them is not something `cargo test` at the repository root should
+# do -- but they are generated from annotations that live in `jawohl` itself,
+# and the drift guard that checks them is part of `jawohl`'s own test suite.
+[workspace]
+resolver = "2"
+members = ["python", "node"]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+publish = false
