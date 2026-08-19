@@ -77,7 +77,7 @@ impl Validation {
 /// number is delimited**, which deletes the feature entirely.
 ///
 /// So the assumption is made explicit, and enforced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(jedem::Enum, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NumberProfile {
     /// Assume plain decimal — no `e`/`E` exponent. A prefix then bounds an
     /// interval (`1000` ⇒ `[1000, 1001)`) and bounds decide early.

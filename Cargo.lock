@@ -29,7 +29,7 @@ dependencies = [
 [[package]]
 name = "jedem"
 version = "0.1.0"
-source = "git+https://github.com/PowderworksCode/jedem?branch=feat%2Fhandles#d3db30515fb5e6b00b5878ed3504588460c316ed"
+source = "git+https://github.com/PowderworksCode/jedem?branch=feat%2Fhandles#9585c49726d9a5d457ef5c53f4a0453d14042cf7"
 dependencies = [
  "jedem-macros",
 ]
@@ -37,7 +37,7 @@ dependencies = [
 [[package]]
 name = "jedem-macros"
 version = "0.1.0"
-source = "git+https://github.com/PowderworksCode/jedem?branch=feat%2Fhandles#d3db30515fb5e6b00b5878ed3504588460c316ed"
+source = "git+https://github.com/PowderworksCode/jedem?branch=feat%2Fhandles#9585c49726d9a5d457ef5c53f4a0453d14042cf7"
 dependencies = [
  "proc-macro2",
  "quote",

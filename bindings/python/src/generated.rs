@@ -17,6 +17,45 @@ use pyo3::prelude::*;
 fn err(e: impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(e.to_string())
 }
+
+/// A handle is empty only between a builder taking its value out and putting
+/// it back, so seeing this means that builder panicked. The handle cannot be
+/// repaired -- Rust consumed the value -- so every later call says so.
+const EMPTIED: &str = "this handle was emptied by a builder that panicked";
+/// How numeric prefixes are read.
+///
+/// The sharpest problem in the design. `"limit": 1000` against `maximum: 100`
+/// looks like an obvious early cancel — but `1000` may still become `1000e-9`,
+/// which is `0.000001`, and the `e` need not come next (`1000.5e-9` is legal
+/// too). Under exact analysis **no numeric bound is ever decidable before the
+/// number is delimited**, which deletes the feature entirely.
+///
+/// So the assumption is made explicit, and enforced.
+#[pyclass(eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NumberProfile {
+    PlainDecimal,
+    Exact,
+}
+
+impl From<jawohl::NumberProfile> for NumberProfile {
+    fn from(v: jawohl::NumberProfile) -> Self {
+        match v {
+            jawohl::NumberProfile::PlainDecimal => Self::PlainDecimal,
+            jawohl::NumberProfile::Exact => Self::Exact,
+        }
+    }
+}
+
+impl From<NumberProfile> for jawohl::NumberProfile {
+    fn from(v: NumberProfile) -> Self {
+        match v {
+            NumberProfile::PlainDecimal => Self::PlainDecimal,
+            NumberProfile::Exact => Self::Exact,
+        }
+    }
+}
+
 /// What is known about a value's validity.
 ///
 /// The two "so far" states are what make this different from a batch
@@ -94,12 +133,12 @@ impl From<Syntax> for jawohl::Syntax {
 
 #[pyclass]
 pub struct Stream {
-    inner: jawohl::Stream,
+    inner: Option<jawohl::Stream>,
 }
 
 impl From<jawohl::Stream> for Stream {
     fn from(inner: jawohl::Stream) -> Self {
-        Self { inner }
+        Self { inner: Some(inner) }
     }
 }
 
@@ -135,12 +174,28 @@ impl Stream {
         Ok(jawohl::Stream::from_json_schema(schema).map_err(err)?.into())
     }
 
+    /// Choose how numeric prefixes are read.
+    ///
+    /// [`NumberProfile::PlainDecimal`] (the default) lets `"limit": 1000` be
+    /// rejected against `maximum: 100` before the number is delimited, and
+    /// fails the stream if an exponent ever appears. [`NumberProfile::Exact`]
+    /// accepts every JSON number and gives up early numeric rejection, because
+    /// `1000` may still become `1000e-9`.
+    ///
+    /// No effect without a schema: with nothing to judge there is nothing to
+    /// be unsound about, and `1e10` is simply a number.
+    fn with_number_profile(mut slf: PyRefMut<'_, Self>, profile: NumberProfile) -> PyRefMut<'_, Self> {
+        let inner = slf.inner.take().expect(EMPTIED);
+        slf.inner = Some(inner.with_number_profile(profile.into()));
+        slf
+    }
+
     /// How the value at `pointer` stands against the schema.
     ///
     /// [`Validation::Pending`] without a schema, or where the schema says
     /// nothing about that path.
     fn validation(&self, pointer: &str) -> Validation {
-        self.inner.validation(pointer).into()
+        self.get().validation(pointer).into()
     }
 
     /// True when the document can no longer become valid, whatever arrives.
@@ -148,7 +203,27 @@ impl Stream {
     /// The early-cancellation signal: a caller seeing this can stop the
     /// generation producing the input rather than paying for the rest of it.
     fn is_irrecoverable(&self) -> bool {
-        self.inner.is_irrecoverable()
+        self.get().is_irrecoverable()
+    }
+
+    /// Set the maximum container nesting depth. The default is
+    /// [`DEFAULT_MAX_DEPTH`].
+    ///
+    /// Nesting deeper than this is a [`ParseErrorKind::DepthLimitExceeded`].
+    /// The limit exists because jawohl's input is untrusted model output and
+    /// every level costs an allocation: without a ceiling, `[` repeated is a
+    /// denial-of-service vector. Raise it if you genuinely have deep
+    /// documents; lower it to harden further.
+    ///
+    /// ```
+    /// # use jawohl::Stream;
+    /// let mut s = Stream::new().with_max_depth(3);
+    /// assert!(s.push(b"[[[[[1]]]]]").is_err());
+    /// ```
+    fn with_max_depth(mut slf: PyRefMut<'_, Self>, depth: i64) -> PyRefMut<'_, Self> {
+        let inner = slf.inner.take().expect(EMPTIED);
+        slf.inner = Some(inner.with_max_depth(depth as usize));
+        slf
     }
 
     /// Feed the next chunk.
@@ -157,7 +232,7 @@ impl Stream {
     /// document. Running out of input mid-value is not an error — it is the
     /// normal state of a stream. Once a stream has failed it stays failed.
     fn push(&mut self, chunk: &[u8]) -> PyResult<()> {
-        self.inner.push(chunk).map_err(err)?;
+        self.get_mut().push(chunk).map_err(err)?;
         Ok(())
     }
 
@@ -166,19 +241,27 @@ impl Stream {
     /// `pointer` is an RFC 6901 JSON Pointer: `""` is the root, `/query` a
     /// member, `/messages/0/role` a nested one.
     fn status(&self, pointer: &str) -> Syntax {
-        self.inner.status(pointer).into()
+        self.get().status(pointer).into()
     }
 
     /// True once the root value has closed.
     fn is_document_complete(&self) -> bool {
-        self.inner.is_document_complete()
+        self.get().is_document_complete()
     }
 
     /// Signal end of input: completes a trailing number or literal if it is
     /// well-formed. Containers left open simply stay open.
     fn finish(&mut self) -> PyResult<()> {
-        self.inner.finish().map_err(err)?;
+        self.get_mut().finish().map_err(err)?;
         Ok(())
+    }
+}
+impl Stream {
+    fn get(&self) -> &jawohl::Stream {
+        self.inner.as_ref().expect(EMPTIED)
+    }
+    fn get_mut(&mut self) -> &mut jawohl::Stream {
+        self.inner.as_mut().expect(EMPTIED)
     }
 }
 
@@ -239,6 +322,7 @@ pub fn get_closing_string_for_partial_json(input: &str) -> PyResult<String> {
 
 /// Register everything on the module. Call this from your `#[pymodule]`.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<NumberProfile>()?;
     m.add_class::<Validation>()?;
     m.add_class::<Syntax>()?;
     m.add_class::<Stream>()?;

@@ -11,6 +11,7 @@
 // references them by name and rustc cannot tell they are used.
 #![allow(dead_code)]
 
+use napi::bindgen_prelude::This;
 use napi_derive::napi;
 
 /// A core error surfaces as a thrown JS `Error` carrying its `Display` text --
@@ -19,6 +20,44 @@ use napi_derive::napi;
 fn err(e: impl std::fmt::Display) -> napi::Error {
     napi::Error::from_reason(e.to_string())
 }
+
+/// A handle is empty only between a builder taking its value out and putting
+/// it back, so seeing this means that builder panicked. The handle cannot be
+/// repaired -- Rust consumed the value -- so every later call says so.
+const EMPTIED: &str = "this handle was emptied by a builder that panicked";
+/// How numeric prefixes are read.
+///
+/// The sharpest problem in the design. `"limit": 1000` against `maximum: 100`
+/// looks like an obvious early cancel — but `1000` may still become `1000e-9`,
+/// which is `0.000001`, and the `e` need not come next (`1000.5e-9` is legal
+/// too). Under exact analysis **no numeric bound is ever decidable before the
+/// number is delimited**, which deletes the feature entirely.
+///
+/// So the assumption is made explicit, and enforced.
+#[napi(string_enum)]
+pub enum NumberProfile {
+    PlainDecimal,
+    Exact,
+}
+
+impl From<jawohl::NumberProfile> for NumberProfile {
+    fn from(v: jawohl::NumberProfile) -> Self {
+        match v {
+            jawohl::NumberProfile::PlainDecimal => Self::PlainDecimal,
+            jawohl::NumberProfile::Exact => Self::Exact,
+        }
+    }
+}
+
+impl From<NumberProfile> for jawohl::NumberProfile {
+    fn from(v: NumberProfile) -> Self {
+        match v {
+            NumberProfile::PlainDecimal => Self::PlainDecimal,
+            NumberProfile::Exact => Self::Exact,
+        }
+    }
+}
+
 /// What is known about a value's validity.
 ///
 /// The two "so far" states are what make this different from a batch
@@ -94,12 +133,12 @@ impl From<Syntax> for jawohl::Syntax {
 
 #[napi]
 pub struct Stream {
-    inner: jawohl::Stream,
+    inner: Option<jawohl::Stream>,
 }
 
 impl From<jawohl::Stream> for Stream {
     fn from(inner: jawohl::Stream) -> Self {
-        Self { inner }
+        Self { inner: Some(inner) }
     }
 }
 
@@ -135,13 +174,30 @@ impl Stream {
         Ok(jawohl::Stream::from_json_schema(&schema).map_err(err)?.into())
     }
 
+    /// Choose how numeric prefixes are read.
+    ///
+    /// [`NumberProfile::PlainDecimal`] (the default) lets `"limit": 1000` be
+    /// rejected against `maximum: 100` before the number is delimited, and
+    /// fails the stream if an exponent ever appears. [`NumberProfile::Exact`]
+    /// accepts every JSON number and gives up early numeric rejection, because
+    /// `1000` may still become `1000e-9`.
+    ///
+    /// No effect without a schema: with nothing to judge there is nothing to
+    /// be unsound about, and `1e10` is simply a number.
+    #[napi(js_name = "withNumberProfile")]
+    pub fn with_number_profile<'a>(&mut self, this: This<'a>, profile: NumberProfile) -> This<'a> {
+        let inner = self.inner.take().expect(EMPTIED);
+        self.inner = Some(inner.with_number_profile(profile.into()));
+        this
+    }
+
     /// How the value at `pointer` stands against the schema.
     ///
     /// [`Validation::Pending`] without a schema, or where the schema says
     /// nothing about that path.
     #[napi(js_name = "validation")]
     pub fn validation(&self, pointer: String) -> Validation {
-        self.inner.validation(&pointer).into()
+        self.get().validation(&pointer).into()
     }
 
     /// True when the document can no longer become valid, whatever arrives.
@@ -150,7 +206,28 @@ impl Stream {
     /// generation producing the input rather than paying for the rest of it.
     #[napi(js_name = "isIrrecoverable")]
     pub fn is_irrecoverable(&self) -> bool {
-        self.inner.is_irrecoverable()
+        self.get().is_irrecoverable()
+    }
+
+    /// Set the maximum container nesting depth. The default is
+    /// [`DEFAULT_MAX_DEPTH`].
+    ///
+    /// Nesting deeper than this is a [`ParseErrorKind::DepthLimitExceeded`].
+    /// The limit exists because jawohl's input is untrusted model output and
+    /// every level costs an allocation: without a ceiling, `[` repeated is a
+    /// denial-of-service vector. Raise it if you genuinely have deep
+    /// documents; lower it to harden further.
+    ///
+    /// ```
+    /// # use jawohl::Stream;
+    /// let mut s = Stream::new().with_max_depth(3);
+    /// assert!(s.push(b"[[[[[1]]]]]").is_err());
+    /// ```
+    #[napi(js_name = "withMaxDepth")]
+    pub fn with_max_depth<'a>(&mut self, this: This<'a>, depth: i64) -> This<'a> {
+        let inner = self.inner.take().expect(EMPTIED);
+        self.inner = Some(inner.with_max_depth(depth as usize));
+        this
     }
 
     /// Feed the next chunk.
@@ -160,7 +237,7 @@ impl Stream {
     /// normal state of a stream. Once a stream has failed it stays failed.
     #[napi(js_name = "push")]
     pub fn push(&mut self, chunk: napi::bindgen_prelude::Uint8Array) -> napi::Result<()> {
-        self.inner.push(&chunk).map_err(err)?;
+        self.get_mut().push(&chunk).map_err(err)?;
         Ok(())
     }
 
@@ -170,21 +247,29 @@ impl Stream {
     /// member, `/messages/0/role` a nested one.
     #[napi(js_name = "status")]
     pub fn status(&self, pointer: String) -> Syntax {
-        self.inner.status(&pointer).into()
+        self.get().status(&pointer).into()
     }
 
     /// True once the root value has closed.
     #[napi(js_name = "isDocumentComplete")]
     pub fn is_document_complete(&self) -> bool {
-        self.inner.is_document_complete()
+        self.get().is_document_complete()
     }
 
     /// Signal end of input: completes a trailing number or literal if it is
     /// well-formed. Containers left open simply stay open.
     #[napi(js_name = "finish")]
     pub fn finish(&mut self) -> napi::Result<()> {
-        self.inner.finish().map_err(err)?;
+        self.get_mut().finish().map_err(err)?;
         Ok(())
+    }
+}
+impl Stream {
+    fn get(&self) -> &jawohl::Stream {
+        self.inner.as_ref().expect(EMPTIED)
+    }
+    fn get_mut(&mut self) -> &mut jawohl::Stream {
+        self.inner.as_mut().expect(EMPTIED)
     }
 }
 

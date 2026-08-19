@@ -59,9 +59,10 @@ have no lowering yet:
 than poll `status`. Polling answers the same questions today, just less
 directly.
 
-The two builders, `with_number_profile` and `with_max_depth`, are skipped for a
-different reason — they take `self` by value, which cannot mean anything once
-another language owns the handle.
+The two builders cross fine. `with_number_profile` and `with_max_depth` take
+`self` and return `Self` in Rust, which names the same object, so the bindings
+mutate in place and hand the same handle back — `Stream().with_max_depth(64)`
+chains here exactly as it does in Rust, with no annotation on either method.
 
 ## Layout
 

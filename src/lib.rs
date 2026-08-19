@@ -138,9 +138,6 @@ impl Stream {
     ///
     /// No effect without a schema: with nothing to judge there is nothing to
     /// be unsound about, and `1e10` is simply a number.
-    // Consumes `self`, which cannot mean anything once another language owns
-    // the handle.
-    #[jedem(skip)]
     pub fn with_number_profile(mut self, profile: NumberProfile) -> Self {
         if let Some(v) = self.validator.take() {
             self.validator = Some(validate::Validator::new(v.schema().clone(), profile));
@@ -212,9 +209,6 @@ impl Stream {
     /// let mut s = Stream::new().with_max_depth(3);
     /// assert!(s.push(b"[[[[[1]]]]]").is_err());
     /// ```
-    // Consumes `self`, which cannot mean anything once another language owns
-    // the handle.
-    #[jedem(skip)]
     pub fn with_max_depth(mut self, depth: usize) -> Self {
         self.parser.set_max_depth(depth);
         self

@@ -54,6 +54,28 @@ check("closed by a later chunk", s.status("/query"), jawohl.Syntax.Complete)
 s.push(b"}")
 check("document closed", s.is_document_complete(), True)
 
+print("the Rust builders cross unchanged")
+# `with_max_depth` and `with_number_profile` take `self` and return `Self` in
+# Rust. Nothing was annotated or reshaped; the binding mutates in place and
+# hands the same object back, so the chain reads as it does in Rust.
+shallow = jawohl.Stream().with_max_depth(3)
+try:
+    shallow.push(b"[[[[[1]]]]]")
+    print("  FAIL depth limit was not applied"); fails += 1
+except ValueError:
+    print("  ok   depth limit applied through the builder")
+chained = jawohl.Stream().with_max_depth(64)
+check("chain returns the same handle", chained.with_max_depth(64) is chained, True)
+# The profile builder takes an enum, and only bites with a schema attached.
+exact = jawohl.Stream.from_json_schema('{"type":"integer","maximum":100}')
+exact = exact.with_number_profile(jawohl.NumberProfile.Exact)
+exact.push(b"1000")
+# Under Exact, `1000` may still become `1000e-9`, so no bound is decided yet.
+check("Exact defers the bound", exact.validation(""), jawohl.Validation.Pending)
+plain = jawohl.Stream.from_json_schema('{"type":"integer","maximum":100}')
+plain.push(b"1000")
+check("PlainDecimal decides it", plain.is_irrecoverable(), True)
+
 print("two streams are independent")
 a, b = jawohl.Stream(), jawohl.Stream()
 a.push(b'{"n":1}')
