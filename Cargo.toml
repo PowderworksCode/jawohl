@@ -25,3 +25,10 @@ features = ["std", "syntax", "dfa-build", "dfa-search", "unicode"]
 [dev-dependencies]
 # Used only to check, in tests, that what jawohl produces really is JSON.
 serde_json = "1"
+
+[package.metadata.cratebank]
+# Opted in: this repository is public, so its crate names are already
+# public. Without this the census records the build and withholds the
+# names, which for an open repository is precision nobody asked for.
+public = true
+repository = "https://github.com/PowderworksCode/jawohl"
