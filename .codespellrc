@@ -1,0 +1,6 @@
+[codespell]
+# tests/corpus is the JSONTestSuite fixture corpus: intentionally malformed/truncated JSON, not prose.
+skip = ./tests/corpus
+# Truncated JSON tokens used deliberately in docs and tests: tru/fals ("true"/"false" cut mid-stream),
+# ser (the "par"+"ser" split-push example), abd (trie test key alongside abc/abe).
+ignore-words-list = tru,fals,ser,abd
