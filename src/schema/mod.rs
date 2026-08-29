@@ -26,7 +26,7 @@
 //! The classification is not uniform per keyword — it depends on the value's
 //! type and, for `pattern` and the numeric bounds, on the constraint itself.
 //! See [`Pattern`] for why an unanchored regex can never reject early, and the
-//! numeric-bounds discussion in `DESIGN.md` §4.2 for why exponent notation
+//! numeric-bounds discussion in `notes/DESIGN.md` §4.2 for why exponent notation
 //! makes `maximum` undecidable on a prefix in the general case.
 //!
 //! # Honesty

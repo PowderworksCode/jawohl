@@ -1,4 +1,4 @@
-//! The ten-case table from DESIGN.md §1 — the argument for the rewrite.
+//! The ten-case table from notes/DESIGN.md §1 — the argument for the rewrite.
 //!
 //! 1.0 emitted output that does not parse for six of these, and returned `Ok`
 //! for all six. Every case here asserts the completion both parses and says
