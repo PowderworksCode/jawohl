@@ -1,0 +1,225 @@
+name: release (rust)
+
+# A tag is the whole trigger. Everything the installer reads — the archives, the
+# checksums, and the "latest" pointer — is produced here, so a release is never
+# assembled by hand.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build a release for
+        required: true
+
+permissions:
+  contents: read
+
+# Never run two releases at once, and never cancel one in flight: a cancelled
+# `cargo publish` can leave a version uploaded that can never be reused.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  # The release is created as a draft and published only after every archive and
+  # the checksum file are in place. A draft is not returned by the "latest"
+  # endpoint, so `install.sh` can never see a half-uploaded release.
+  draft:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      # What this repository publishes, answered where the checkout is. Neither
+      # can be a job-level `if: hashFiles(...)`: that reads a workspace which
+      # does not exist before checkout, and a workflow whose expression cannot
+      # be evaluated does not start at all — no jobs, no release, on a tag push
+      # nobody is watching.
+      crate: ${{ steps.publishes.outputs.crate }}
+      binary: ${{ steps.publishes.outputs.binary }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+      - id: publishes
+        run: |
+          if [ -f scripts/publish.sh ]; then
+            echo "crate=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "crate=false" >> "$GITHUB_OUTPUT"
+            echo "no scripts/publish.sh; this release ends at the smoke test"
+          fi
+          # A library crate has nothing to put in an archive, nothing to
+          # install, and nothing to smoke-test. Cargo is asked rather than the
+          # file tree, because a binary target can be declared several ways.
+          if cargo metadata --no-deps --format-version 1 |
+              jq -e '[.packages[].targets[] | select(any(.kind[]; . == "bin"))] | length > 0' >/dev/null; then
+            echo "binary=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "binary=false" >> "$GITHUB_OUTPUT"
+            echo "no binary targets; this release is a crate publish only"
+          fi
+      - name: Check the tag against Cargo.toml
+        run: |
+          crate=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "$TAG" != "v${crate}" ]; then
+            echo "tag ${TAG} does not match Cargo.toml version ${crate}" >&2
+            exit 1
+          fi
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --title "$TAG" --generate-notes
+          fi
+
+  build:
+    needs: draft
+    if: needs.draft.outputs.binary == 'true'
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+      # Both Linux targets cross-compile from an ordinary x86_64 host, because
+      # .cargo/config.toml links them with rust-lld against a self-contained
+      # musl. No cross toolchain, container, or apt package is involved.
+      - run: rustup target add ${{ matrix.target }}
+      # No build cache here, deliberately: a cache is writable from other
+      # workflows, and these binaries are the release. Cold builds are the
+      # price of artifacts nothing else could have written to (zizmor's
+      # cache-poisoning audit).
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          stage=$(mktemp -d)
+          cp "target/${{ matrix.target }}/release/jawohl" "$stage/"
+          cp README.md LICENSE "$stage/"
+          tar -czf "jawohl-${TAG}-${{ matrix.target }}.tar.gz" -C "$stage" \
+            jawohl README.md LICENSE
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$TAG" "jawohl-${TAG}-${{ matrix.target }}.tar.gz" --clobber
+
+  # Runs for every release, because un-drafting is not a binary concern: a
+  # library's release would otherwise stay a draft forever. Only the archives
+  # are conditional. `always()` is what lets a skipped `build` through; without
+  # it a skipped dependency skips this job too.
+  publish:
+    needs: [draft, build]
+    if: >-
+      always() && needs.draft.result == 'success'
+      && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      # The checksums are computed from what the release actually holds rather
+      # than from what each build job believes it uploaded.
+      - name: Checksum every archive
+        if: needs.draft.outputs.binary == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release download "$TAG" --pattern '*.tar.gz' --dir assets
+          cd assets && sha256sum ./*.tar.gz | sed 's|\./||' > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --clobber
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "$TAG" --draft=false --latest
+
+  # Install the release that was just published, on every supported platform,
+  # through both the script and the action. Called rather than triggered: a
+  # release published by GITHUB_TOKEN raises no event that starts a workflow.
+  smoke:
+    needs: [draft, publish]
+    if: >-
+      always() && needs.publish.result == 'success'
+      && needs.draft.outputs.binary == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/install-smoke.yml
+    with:
+      version: ${{ inputs.tag || github.ref_name }}
+
+  # Publish the same commit to crates.io, after the binaries have been proven
+  # to install and run. crates.io is the one place a version can never be
+  # replaced, so it goes last and everything checkable is checked first.
+  #
+  # The logic lives in scripts/publish.sh so the same path can be run by hand,
+  # and so this job is a caller rather than a second definition of it.
+  crate:
+    needs: [draft, publish, smoke]
+    # Only repositories that publish a crate carry the script; everyone else
+    # ends at the smoke test. The answer comes from the draft job, which has
+    # the checkout — see the note on its outputs.
+    #
+    # A skipped smoke job means either "no binary in this repository" or "the
+    # binary never got that far", and those must not read alike. `publish`
+    # tells them apart: it succeeds when the archives are up or when there were
+    # none to build, and is skipped when the build failed.
+    if: >-
+      always() && needs.draft.outputs.crate == 'true'
+      && needs.publish.result == 'success'
+      && (needs.smoke.result == 'success' || needs.smoke.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # One place to require a human approval before an irreversible publish:
+    # Settings > Environments > crates-io > Required reviewers.
+    environment: crates-io
+    permissions:
+      id-token: write
+    env:
+      # `secrets` cannot be read from an `if`, so the question of whether one
+      # exists is answered here, where it can.
+      HAS_STORED_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      # Trusted publishing is the normal path and needs no secret. The stored
+      # token exists only to bootstrap: a crate's first version cannot be
+      # published this way, because crates.io will not attach a trusted
+      # publisher to a crate that does not exist yet. Delete the secret once
+      # the trusted publisher is configured and this step takes over again.
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        id: auth
+        if: env.HAS_STORED_TOKEN == 'false'
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ "${HAS_STORED_TOKEN}" = "true" ]; then
+            echo "publishing with the stored bootstrap token; delete it once trusted publishing is configured"
+          else
+            echo "publishing with a short-lived trusted-publishing token"
+          fi
+          scripts/publish.sh --execute
