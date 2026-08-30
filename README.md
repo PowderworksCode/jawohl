@@ -178,7 +178,7 @@ See `examples/sse.rs`.
 ## Upgrading from 0.1
 
 `complete_json` and `get_closing_string_for_partial_json` keep their signatures.
-The behaviour is stricter and more correct:
+The behaviour is stricter and better defined:
 
 - **Malformed input now returns `Err`.** 0.1 returned `Ok` with output that did
   not parse — for `{"a": tru`, `{"a": "x\`, `{"a":`, `{"a":1,`, `{"que`, and a

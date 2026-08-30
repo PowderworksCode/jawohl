@@ -21,7 +21,7 @@ documents through `complete_json`, checking whether the result parses:
 | `{"que` | `{"que"}` ✗ | `{}` |
 
 A closer-counter has no model of where it is in the grammar, so it cannot know
-that `tru` needs an `e` or that a trailing `\` escapes the very quote it just
+that `tru` needs an `e` or that a trailing `\` escapes the quote it just
 appended. That is structural, not a bug list.
 
 ### Added
