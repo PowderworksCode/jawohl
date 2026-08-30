@@ -145,6 +145,17 @@ cargo run --example validate    # early cancellation, and the lowering report
 cargo run --example sse         # the realistic shape: JSON inside a data: stream
 ```
 
+## Development
+
+`scripts/dev.sh` points git at the committed hooks and then runs the gate CI
+runs: build, fmt, clippy, the tests, and the doctests. The doctests are a
+separate step because `--all-targets` does not run them, and they are what keeps
+the snippets above honest.
+
+```sh
+scripts/dev.sh
+```
+
 ## Framing
 
 jawohl parses JSON, not the envelope around it. Provider streams wrap fragments
