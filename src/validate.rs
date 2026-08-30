@@ -432,7 +432,7 @@ impl Validator {
     /// dead branch kills the whole. `anyOf`, `oneOf` and `not` need per-branch
     /// state to be judged incrementally, and are deliberately decided **at
     /// completion** in this version — a conservative `Pending` beforehand,
-    /// never a guess. See `DESIGN.md` §9.
+    /// never a guess. See `notes/DESIGN.md` §9.
     fn check_combinators(&self, n: &Node, value: &Value, complete: bool) -> Validation {
         let mut parts = Vec::new();
         for a in &n.all_of {
