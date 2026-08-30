@@ -376,7 +376,7 @@ and `jawohl.stream(MyZodSchema)` are host-side sugar over it.
 the same handle; `push`/`snapshot`/`status` are synchronous **methods** on it;
 `changes()` is a **stream op**; a native validator is a **value-returning
 callback param**. jawohl exercises all three of
-jedem's hard three — which is what makes it a good acid test and also what
+jedem's hard three — which is what makes it a good proving ground and also what
 makes §8 the risk.
 
 ---
@@ -420,7 +420,7 @@ bet:
 1. **The core track absorbs the wait.** C1–C4 is the majority of the engineering
    and none of it is blocked. By the time jedem reaches step 3, jawohl should
    have a complete, tested Rust core waiting for a surface.
-2. **jawohl is the acid test that pulls jedem forward.** `findings.md`'s
+2. **jawohl is the proving ground that pulls jedem forward.** `findings.md`'s
    method — author the complete real surface before freezing the IR — is what
    caught every gap in fluessig. jawohl's surface is small, precise, and hits all
    three hard cases, which makes it a far better forcing function than a demo
